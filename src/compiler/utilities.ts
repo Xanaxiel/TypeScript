@@ -3083,7 +3083,7 @@ namespace ts {
         return isExportDefaultSymbol(symbol) ? symbol.valueDeclaration.localSymbol : undefined;
     }
 
-    export function isExportDefaultSymbol(symbol: Symbol): boolean {
+    export function isExportDefaultSymbol(symbol: Symbol): boolean { //need?
         return symbol && symbol.valueDeclaration && hasModifier(symbol.valueDeclaration, ModifierFlags.Default);
     }
 
