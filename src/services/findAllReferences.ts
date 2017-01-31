@@ -44,65 +44,77 @@ namespace ts.FindAllReferences {
     interface Options {
         readonly findInStrings: boolean;
         readonly findInComments: boolean;
-        readonly isForRename: boolean; //used?
-        readonly implementations: boolean; //used?
+        readonly isForRename: boolean;
+        readonly implementations: boolean;
     }
     interface Search {
-        location: Node;
-        symbol: Symbol;
-        symbols: Symbol[];
-        text: string;
-        meaning: SemanticMeaning;
+        readonly location: Node;
+        readonly symbol: Symbol;
+        readonly symbols: Symbol[];
+        readonly text: string;
+        readonly meaning: SemanticMeaning;
     }
-    //TODO: no class
-    class State implements Options {
-        private readonly result: ReferencedSymbol[] = [];
-        private readonly symbolToIndex: number[] = [];
-        public readonly inheritsFromCache = createMap<boolean>();
-        readonly findInStrings: boolean;
-        readonly findInComments: boolean;
-        readonly isForRename: boolean; //used?
-        readonly implementations: boolean; //used?
+    interface State extends Options {
+        readonly sourceFiles: SourceFile[];
+        readonly typeChecker: TypeChecker;
+        readonly cancellationToken: CancellationToken;
+        readonly inheritsFromCache: Map<boolean>;
 
-        constructor(
-            readonly sourceFiles: SourceFile[],
-            readonly typeChecker: TypeChecker,
-            readonly cancellationToken: CancellationToken,
-            options: Options) {
-            this.findInStrings = options.findInStrings;
-            this.findInComments = options.findInComments;
-            this.isForRename = options.isForRename;
-            this.implementations = options.implementations;
+        // Returns 'true' if we've already visited.
+        markSearched(sourceFile: SourceFile, symbol: Symbol): boolean;
+
+        add(ref: ReferencedSymbol): void; //private?
+        getReferencedSymbol(symbol: Symbol, searchLocation: Node): ReferencedSymbol; //private?
+        addReferences(references: Node[], searchSymbol: Symbol, searchLocation: Node): void;
+    }
+
+    function createState(sourceFiles: SourceFile[], typeChecker: TypeChecker, cancellationToken: CancellationToken, options: Options, result: ReferencedSymbol[]): State {
+        const symbolToIndex: number[] = [];
+        const inheritsFromCache = createMap<boolean>();
+        //Maps source file -> symbol Id -> true
+        const sourceFileToSeenSymbols: Array<Array<true>> = [];
+
+        return { sourceFiles, typeChecker, cancellationToken, inheritsFromCache, ...options, markSearched, add, getReferencedSymbol, addReferences };
+
+        function markSearched(sourceFile: SourceFile, symbol: Symbol): boolean {
+            let seenSymbols = sourceFileToSeenSymbols[sourceFile.id];
+            if (!seenSymbols) {
+                seenSymbols = sourceFileToSeenSymbols[sourceFile.id] = [];
+                seenSymbols[symbol.id] = true;
+                return false;
+            }
+
+            if (seenSymbols[symbol.id]) {
+                return true;
+            }
+            seenSymbols[symbol.id] = true;
+            return false;
         }
 
-        public getResult() { return this.result; }
-
-        //private?
-        add(ref: ReferencedSymbol) {
-            this.result.push(ref);
+        function add(ref: ReferencedSymbol) {
+            result.push(ref);
         }
 
         //private?
-        getReferencedSymbol(symbol: Symbol, searchLocation: Node, typeChecker: TypeChecker): ReferencedSymbol {
+        function getReferencedSymbol(symbol: Symbol, searchLocation: Node): ReferencedSymbol {
             const symbolId = getSymbolId(symbol);
-            let index = this.symbolToIndex[symbolId];
+            let index = symbolToIndex[symbolId];
             if (index === undefined) {
-                index = this.result.length;
-                this.symbolToIndex[symbolId] = index;
+                index = result.length;
+                symbolToIndex[symbolId] = index;
 
-                this.add({
+                add({
                     definition: getDefinition(symbol, searchLocation, typeChecker),
                     references: []
                 });
             }
 
-            return this.result[index];
+            return result[index];
         }
 
-        //TODO: store typechecker?
-        addReferences(references: Node[], searchSymbol: Symbol, searchLocation: Node, typeChecker: TypeChecker): void {
+        function addReferences(references: Node[], searchSymbol: Symbol, searchLocation: Node): void {
             if (references.length) {
-                const referencedSymbol = this.getReferencedSymbol(searchSymbol, searchLocation, typeChecker);
+                const referencedSymbol = getReferencedSymbol(searchSymbol, searchLocation);
                 addRange(referencedSymbol.references, map(references, getReferenceEntryFromNode));
             }
         }
@@ -120,7 +132,8 @@ namespace ts.FindAllReferences {
         // Compute the meaning from the location and the symbol it references
         const searchMeaning = getIntersectingMeaningFromDeclarations(getMeaningFromLocation(node), symbol.declarations);
 
-        const state = new State(sourceFiles, typeChecker, cancellationToken, options);
+        const result: ReferencedSymbol[] = [];
+        const state = createState(sourceFiles, typeChecker, cancellationToken, options, result);
 
         // Get the text to search for.
         // Note: if this is an external module symbol, the name doesn't include quotes.
@@ -128,29 +141,11 @@ namespace ts.FindAllReferences {
 
         // Try to get the smallest valid scope that we can limit our search to;
         // otherwise we'll need to search globally (i.e. include each file).
-        const scope = getSymbolScope(symbol);
-        if (scope) {
-            getRefs(scope, declaredName);
-        }
-        else {
-            const isDefault = isExportDefaultSymbol(symbol); //!!! don't need!
-            const internedName = isDefault ? symbol.valueDeclaration.localSymbol.name : getInternedName(symbol, node);
-            for (const sourceFile of sourceFiles) {
-                cancellationToken.throwIfCancellationRequested();
-                const searchName = (isDefault ? getDefaultImportName(symbol, sourceFile, typeChecker) : undefined) ||
-                    (sourceFileHasName(sourceFile, internedName) ? declaredName : undefined);
-                if (searchName !== undefined) {
-                    getRefs(sourceFile, searchName);
-                }
-            }
-        }
+        const scope = getSymbolScope(symbol) || node.getSourceFile();
+        const search: Search = { location: node, meaning: searchMeaning, symbol, symbols: searchSymbols, text: declaredName };
+        getReferencesInContainer(scope, search, state);
 
-        return state.getResult();
-
-        function getRefs(scope: ts.Node, searchText: string): void {
-            const search: Search = { location: node, meaning: searchMeaning, symbol, symbols: searchSymbols, text: searchText };
-            getReferencesInContainer(scope, search, state);
-        }
+        return result;
     }
 
     //Use this only for an exported symbol! Also TODO: make sure we don't do this more than once!
@@ -171,11 +166,12 @@ namespace ts.FindAllReferences {
             if (searchSymbol !== undefined) {
                 const search: Search = { location: exportLocation, meaning: searchMeaning, symbol: searchSymbol, symbols: [searchSymbol], text: searchSymbol.name };
                 //and we recurse and do it again!
-                getReferencesInContainer(sourceFile, search, state);
+                if (!state.markSearched(sourceFile, searchSymbol)) {
+                    getReferencesInContainer(sourceFile, search, state);
+                }
             }
         }
     }
-
 
     /** getReferencedSymbols for special node kinds. */
     function getReferencedSymbolsSpecial(node: Node, sourceFiles: SourceFile[], typeChecker: TypeChecker, cancellationToken: CancellationToken): ReferencedSymbol[] | undefined {
@@ -631,6 +627,7 @@ namespace ts.FindAllReferences {
         if (relatedSymbol) {
             addReferenceToRelatedSymbol(referenceLocation, relatedSymbol);
             //TODO: what for default exports?
+            //TODO: handle imports here too.
             if (referenceLocation.parent.kind === ts.SyntaxKind.ExportSpecifier) {
                 const moduleSymbol = state.typeChecker.getSymbolAtLocation(sourceFile);
                 findAllRefsForExport(moduleSymbol, relatedSymbol, referenceLocation, searchMeaning, /*isDefaultExport*/false, state);
@@ -661,19 +658,19 @@ namespace ts.FindAllReferences {
             if (referenceSymbol === search.symbol && isClassLike(referenceClass)) {
                 Debug.assert(referenceClass.name === referenceLocation);
                 // This is the class declaration containing the constructor.
-                state.addReferences(findOwnConstructorCalls(search.symbol, sourceFile), search.symbol, search.location, state.typeChecker);
+                state.addReferences(findOwnConstructorCalls(search.symbol, sourceFile), search.symbol, search.location);
             }
             else {
                 // If this class appears in `extends C`, then the extending class' "super" calls are references.
                 const classExtending = tryGetClassByExtendingIdentifier(referenceLocation);
                 if (classExtending && isClassLike(classExtending) && followAliasIfNecessary(referenceSymbol, referenceLocation, state.typeChecker) === search.symbol) {
-                    state.addReferences(superConstructorAccesses(classExtending), search.symbol, search.location, state.typeChecker);
+                    state.addReferences(superConstructorAccesses(classExtending), search.symbol, search.location);
                 }
             }
         }
 
         function addReferenceToRelatedSymbol(node: Node, relatedSymbol: Symbol) {
-            const references = state.getReferencedSymbol(relatedSymbol, search.location, state.typeChecker).references;
+            const references = state.getReferencedSymbol(relatedSymbol, search.location).references;
             if (state.implementations) {
                 getImplementationReferenceEntryForNode(node, references, state.typeChecker);
             }
