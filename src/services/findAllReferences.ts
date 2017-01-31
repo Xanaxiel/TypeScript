@@ -54,13 +54,19 @@ namespace ts.FindAllReferences {
         readonly text: string;
         readonly meaning: SemanticMeaning;
     }
+    function createSearch(typeChecker: TypeChecker, location: Node, meaning: SemanticMeaning, symbol: Symbol, symbols: Symbol[] = [symbol]): Search {
+        // Get the text to search for.
+        // Note: if this is an external module symbol, the name doesn't include quotes.
+        const text = stripQuotes(getDeclaredName(typeChecker, symbol, location));
+        return { location, meaning, symbol, symbols, text };
+    }
     interface State extends Options {
         readonly sourceFiles: SourceFile[];
         readonly typeChecker: TypeChecker;
         readonly cancellationToken: CancellationToken;
         readonly inheritsFromCache: Map<boolean>;
 
-        // Returns 'true' if we've already visited.
+        //Returns 'true' if we've already visited.
         markSearched(sourceFile: SourceFile, symbol: Symbol): boolean;
 
         add(ref: ReferencedSymbol): void; //private?
@@ -123,6 +129,10 @@ namespace ts.FindAllReferences {
     //name: this does the whole thing
     //symbol = symbol at location of 'node'
     function foo(symbol: Symbol, node: Node, sourceFiles: SourceFile[], typeChecker: TypeChecker, cancellationToken: CancellationToken, options: Options): ReferencedSymbol[] {
+        // Try to get the smallest valid scope that we can limit our search to;
+        // otherwise we'll need to search globally (i.e. include each file).
+        const scope = getSymbolScope(symbol) || node.getSourceFile();
+
         //Build the set of symbols to search for, initially it has only the current symbol
         const searchSymbols = populateSearchSymbolSet(symbol, node, typeChecker, options.implementations);
         //if (shorthandModuleSymbol) {
@@ -131,44 +141,33 @@ namespace ts.FindAllReferences {
 
         // Compute the meaning from the location and the symbol it references
         const searchMeaning = getIntersectingMeaningFromDeclarations(getMeaningFromLocation(node), symbol.declarations);
+        const search: Search = createSearch(typeChecker, node, searchMeaning, symbol, searchSymbols);
 
         const result: ReferencedSymbol[] = [];
         const state = createState(sourceFiles, typeChecker, cancellationToken, options, result);
-
-        // Get the text to search for.
-        // Note: if this is an external module symbol, the name doesn't include quotes.
-        const declaredName = stripQuotes(getDeclaredName(typeChecker, symbol, node));
-
-        // Try to get the smallest valid scope that we can limit our search to;
-        // otherwise we'll need to search globally (i.e. include each file).
-        const scope = getSymbolScope(symbol) || node.getSourceFile();
-        const search: Search = { location: node, meaning: searchMeaning, symbol, symbols: searchSymbols, text: declaredName };
         getReferencesInContainer(scope, search, state);
-
         return result;
     }
 
     //Use this only for an exported symbol! Also TODO: make sure we don't do this more than once!
-    function findAllRefsForExport(moduleSymbol: Symbol, exportedSymbol: Symbol, exportLocation: Node, searchMeaning: SemanticMeaning, isDefaultExport: boolean, state: State): void {
+    function findAllRefsForExport({ symbol, location, isDefault }: ImportOrExport, searchMeaning: SemanticMeaning, state: State): void {
+        const moduleSymbol = isDefault ? undefined : state.typeChecker.getSymbolAtLocation(location.getSourceFile());
+
         for (const sourceFile of state.sourceFiles) {
             //cancellationToken.throwIfCancellationRequested();
-            let searchSymbol: Symbol;
-            if (isDefaultExport) {
-                throw new Error("TODO");
+            let searchSymbol: Symbol; //This is the symbol local to the file importing it.
+            if (isDefault) {
+                searchSymbol = getDefaultImport(symbol, sourceFile, state.typeChecker);
             } else {
-                if (sourceFileHasName(sourceFile, exportedSymbol.name)) {//just an optimization
-                    searchSymbol = getNamedImport(moduleSymbol, exportedSymbol, sourceFile, state.typeChecker);
+                getInternedName; //needed?
+                if (sourceFileHasName(sourceFile, symbol.name)) {//just an optimization
+                    searchSymbol = getNamedImport(moduleSymbol, symbol, sourceFile, state.typeChecker);
                 }
             }
 
-            //const searchSymbol = (isDefaultExport ? getDefaultImportName(exportedSymbol, sourceFile, tools.typeChecker) : undefined) ||
-            //    (sourceFileHasName(sourceFile, exportedSymbol.name) ? getNamedImport(moduleSymbol, exportedSymbol, sourceFile, tools.typeChecker) : undefined);
-            if (searchSymbol !== undefined) {
-                const search: Search = { location: exportLocation, meaning: searchMeaning, symbol: searchSymbol, symbols: [searchSymbol], text: searchSymbol.name };
+            if (searchSymbol) {
                 //and we recurse and do it again!
-                if (!state.markSearched(sourceFile, searchSymbol)) {
-                    getReferencesInContainer(sourceFile, search, state);
-                }
+                getReferencesInContainer(sourceFile, createSearch(state.typeChecker, location, searchMeaning, searchSymbol), state);
             }
         }
     }
@@ -238,14 +237,15 @@ namespace ts.FindAllReferences {
      * Given a symbol, see if any of the imports in a source file reference it.
      * Only call this if `symbol` is a default export.
      */
-    function getDefaultImportName(symbol: Symbol, sourceFile: SourceFile, checker: ts.TypeChecker): string | undefined {
+    //TODO: watch out for import { default as ... }
+    function getDefaultImport(symbol: Symbol, sourceFile: SourceFile, checker: ts.TypeChecker): Symbol | undefined {
         for (const importSpecifier of sourceFile.imports) {
             const importDecl = importSpecifier.parent as ts.ImportDeclaration;
             Debug.assert(importDecl.moduleSpecifier === importSpecifier);
             const defaultName = importDecl.importClause.name;
-            const defaultReferencedSymbol = checker.getAliasedSymbol(checker.getSymbolAtLocation(defaultName));
-            if (symbol === defaultReferencedSymbol) {
-                return defaultName.text;
+            const defaultImportAlias = checker.getSymbolAtLocation(defaultName);
+            if (checker.getAliasedSymbol(defaultImportAlias) === symbol) {
+                return defaultImportAlias;
             }
         }
         return undefined;
@@ -569,12 +569,16 @@ namespace ts.FindAllReferences {
     //This gets references within a scope.
     function getReferencesInContainer(container: Node, search: Search, state: State): void {
         const sourceFile = container.getSourceFile();
+        if (state.markSearched(sourceFile, search.symbol)) {
+            return;
+        }
+
         const start = state.findInComments ? container.getFullStart() : container.getStart();
         const possiblePositions = getPossibleSymbolReferencePositions(sourceFile, search.text, start, container.getEnd(), state.cancellationToken);
         const parentSymbols = state.implementations ? getParentSymbolsOfPropertyAccess() : undefined; //this is just for 'implementations'
         for (const position of possiblePositions) {
             state.cancellationToken.throwIfCancellationRequested();
-            getReferencesAtLocation(sourceFile, position, search, parentSymbols, search.meaning, state);
+            getReferencesAtLocation(sourceFile, position, search, parentSymbols, state);
         }
 
         /* If we are just looking for implementations and this is a property access expression, we need to get the
@@ -603,7 +607,7 @@ namespace ts.FindAllReferences {
     }
 
     //new, review
-    function getReferencesAtLocation(sourceFile: SourceFile, position: number, search: Search, parentSymbols: Symbol[], searchMeaning: SemanticMeaning, state: State) {
+    function getReferencesAtLocation(sourceFile: SourceFile, position: number, search: Search, parentSymbols: Symbol[], state: State) {
         const referenceLocation = getTouchingPropertyName(sourceFile, position);
 
         if (!isValidReferencePosition(referenceLocation, search.text)) {
@@ -613,7 +617,7 @@ namespace ts.FindAllReferences {
             return;
         }
 
-        if (!(getMeaningFromLocation(referenceLocation) & searchMeaning)) {
+        if (!(getMeaningFromLocation(referenceLocation) & search.meaning)) {
             return;
         }
 
@@ -628,9 +632,14 @@ namespace ts.FindAllReferences {
             addReferenceToRelatedSymbol(referenceLocation, relatedSymbol);
             //TODO: what for default exports?
             //TODO: handle imports here too.
-            if (referenceLocation.parent.kind === ts.SyntaxKind.ExportSpecifier) {
-                const moduleSymbol = state.typeChecker.getSymbolAtLocation(sourceFile);
-                findAllRefsForExport(moduleSymbol, relatedSymbol, referenceLocation, searchMeaning, /*isDefaultExport*/false, state);
+            //'referenceLocation' is an identifier, so go up a level
+            const { imported, exported } = getImportExportSymbols(referenceLocation, referenceSymbol, state.typeChecker);
+            if (imported) {
+                const searchFile = imported.location.getSourceFile();
+                getReferencesInContainer(searchFile, createSearch(state.typeChecker, imported.location, search.meaning, imported.symbol), state);
+            }
+            if (exported) {
+                findAllRefsForExport(exported, search.meaning, state);
             }
             return;
         }
@@ -678,6 +687,34 @@ namespace ts.FindAllReferences {
                 references.push(getReferenceEntryFromNode(node));
             }
         }
+    }
+
+    interface ImportOrExport { symbol: Symbol; location: Node; isDefault: boolean; } //name
+    function getImportExportSymbols(node: Node, symbol: Symbol, typeChecker: TypeChecker): { imported?: ImportOrExport, exported?: ImportOrExport } {
+        let imported: ImportOrExport | undefined;
+        let exported: ImportOrExport | undefined;
+        const { parent } = node;
+        if (hasModifier(parent, ModifierFlags.Export)) {
+            exported = { symbol, location: node, isDefault: hasModifier(node.parent, ModifierFlags.Default) };
+            //may be an 'export-import'!!!!! TODO!
+        }
+        else if (isExportSpecifier(parent)) {
+            //TODO: handle 'export as default' here. And also have an import if this is `import {foo as bar} from "baz";
+            return { exported: { symbol, location: node, isDefault: false } };
+        }
+
+        switch (parent.kind) {
+            case SyntaxKind.ImportSpecifier:
+            case SyntaxKind.ImportClause: {
+                const importSymbol = typeChecker.getAliasedSymbol(symbol);
+                //TODO: import { default as foo } is a default import!!!!!
+                imported = { symbol: importSymbol, location: importSymbol.declarations[0], isDefault: parent.kind === SyntaxKind.ImportSpecifier };
+            }
+            //A third kind of import is to "import * as foo". But we don't recursively find "import *" in other modules.
+               //Find-all-refs for a module should be done on the module specifier instead.
+        }
+
+        return { imported, exported };
     }
 
     function addStringOrCommentReference(sourceFile: SourceFile, position: number, state: State, search: Search) {
