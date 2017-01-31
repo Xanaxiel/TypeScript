@@ -12,9 +12,9 @@
 
 verify.numberOfErrorsInCurrentFile(0);
 
-const [r0, r1, r2, r3] = test.ranges();
-verify.referenceGroups(r0, [
-    { definition: "var a: any", ranges: [r0, r1] },
-    { definition: "import a", ranges: [r2, r3] }
-]);
-//TODO:MOAR TESTS
+const [a0, a1, b0, b1] = test.ranges();
+const aRefs = [a0, a1], bRefs = [b0, b1];
+const vars = { definition: "var a: any", ranges: aRefs };
+const imports = { definition: "import a", ranges: bRefs };
+verify.referenceGroups(aRefs, [vars, imports]);
+verify.referenceGroups(bRefs, [imports, vars]);
