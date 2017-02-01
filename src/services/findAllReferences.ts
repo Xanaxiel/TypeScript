@@ -138,14 +138,22 @@ namespace ts.FindAllReferences {
     //name: this does the whole thing
     //symbol = symbol at location of 'node'
     function findYouSomeReferencesForGreatGood(symbol: Symbol, node: Node, sourceFiles: SourceFile[], checker: TypeChecker, cancellationToken: CancellationToken, options: Options): ReferencedSymbol[] {
+        //special-case: In `var foo; export { foo }` there are 2 different symbols, but only test for 'var foo'.
+        let exportInfo: ExportInfo | undefined;
+
+        if (isExportSpecifier(node.parent)) {
+            exportInfo = getExportInfo(symbol, ExportKind.Named);
+            symbol = checker.getAliasedSymbol(symbol, /*shallow*/true);
+        }
+
+        const isExport = symbol.flags & SymbolFlags.Export;
+        if (isExport) {
+            exportInfo = getExportInfo(symbol, getExportKindForSymbol(symbol));
+        }
+
         // Try to get the smallest valid scope that we can limit our search to;
         // otherwise we'll need to search globally (i.e. include each file).
-        const scope = getSymbolScope(symbol, node);
-
-        //special-case: In `var foo; export { foo }` there are 2 different symbols, but only test for 'var foo'.
-        if (isExportSpecifier(node.parent)) {
-            symbol = checker.getAliasedSymbol(symbol);
-        }
+        const scope = isExport ? undefined : getSymbolScope(symbol, node);
 
         //Build the set of symbols to search for, initially it has only the current symbol
         const searchSymbols = populateSearchSymbolSet(symbol, node, checker, options.implementations);
@@ -164,27 +172,67 @@ namespace ts.FindAllReferences {
             getReferencesInContainer(scope, search, state);
         }
         else {
-            findAllRefsGlobally(search, state);
+            findAllRefsGloballyOrExported(search, state, exportInfo);
         }
 
         return result;
     }
 
+    //!!!
+    function getExportKindForSymbol(symbol: Symbol): ExportKind | undefined {
+        for (const d of symbol.declarations) {
+            const kind = getExportKindForNode(d);
+            if (kind !== undefined) {
+                return kind;
+            }
+        }
+    }
+    //move
+    function getExportKindForNode(node: Node): ExportKind | undefined {
+        if (hasModifier(node, ModifierFlags.Default)) {
+             return ExportKind.Default;
+        }
+        if (node.kind === SyntaxKind.ExportAssignment) {
+            return ExportKind.ExportEquals;
+        }
+        return ExportKind.Named;
+    }
+
+
     //TODO:
     //'exportKind' should be in 'search' so we can combine 'findAllRefsGlobally' and 'findAllRefsForExport'!!!!!!!
 
-    function findAllRefsGlobally(search: Search, state: State) {
+    //destructure 'search'
+    interface ExportInfo { moduleSymbol: Symbol, kind: ExportKind }
+    function findAllRefsGloballyOrExported(search: Search, state: State, exportInfo?: ExportInfo) {
+        //const moduleSymbol = exportKind !== undefined ? search.symbol.parent : undefined;
+        const moduleFile = exportInfo && exportInfo.moduleSymbol.declarations[0];//name, note: this has no effect if it's not a sourcefile
+
         for (const sourceFile of state.sourceFiles) {
+            if (sourceFile === moduleFile) {
+                continue;
+            }
             state.cancellationToken.throwIfCancellationRequested();
-            getInternedName; //need this here?
+
+            if (exportInfo !== undefined) {
+                const { localSearches } = getImportSearches(sourceFile, exportInfo.moduleSymbol, search.symbol, exportInfo.kind, state); //TODO: get a combined search?
+                for (const search of localSearches) {
+                    getReferencesInContainer(sourceFile, search, state);
+                } //TODO: only do this for wierdly-named imports, so we don't duplicate work... although getReferencesInContainer checks for that too....
+            }
+
+            //Also, it might be available as a named property.
+            //TODO: if a default export, look for '.default'!
+            //NOTE: we might be able to detect this based on whether any 'import *' exists anywhere...
+            getInternedName; //Pretty sure don't need this any more!
             if (sourceFileHasName(sourceFile, search.text)) {
-                getReferencesInContainer(sourceFile, search, state);
+                getReferencesInContainer(sourceFile, state.createSearch(search.location, search.symbol), state);
             }
         }
     }
 
     //Use this only for an exported symbol! Also TODO: make sure we don't do this more than once!
-    function findAllRefsForExport(moduleSymbol: Symbol, { symbol, location, exportKind }: Exxxport, state: State): void {
+    /*function findAllRefsForExport(moduleSymbol: Symbol, { symbol, location, exportKind }: Exxxport, state: State): void {
         for (const sourceFile of state.sourceFiles) {
             state.cancellationToken.throwIfCancellationRequested();
 
@@ -202,7 +250,7 @@ namespace ts.FindAllReferences {
                 getReferencesInContainer(sourceFile, state.createSearch(location, symbol), state);
             }
         }
-    }
+    }*/
 
     /** getReferencedSymbols for special node kinds. */
     function getReferencedSymbolsSpecial(node: Node, sourceFiles: SourceFile[], checker: TypeChecker, cancellationToken: CancellationToken): ReferencedSymbol[] | undefined {
@@ -271,8 +319,8 @@ namespace ts.FindAllReferences {
     //TODO: may be imported more than once, so return multiple results!!! TEST
     //TODO: decided I don't need moduleReExports...
     //REMEMBER: 'export =' might be imported by a default or namespace import!!!!!!!!!!!!!!!! TEST
-    function getImportSearches(importingSourceFile: SourceFile, exportingModuleSymbol: Symbol, _exportLocation: Node, exportSymbol: Symbol, exportKind: ExportKind, { createSearch, checker }: State): { localSearches: Search[], moduleReExports: Symbol[] } {
-        Debug.assert(exportSymbol.parent === exportingModuleSymbol); //kill?
+    //TODO: just take the exportinfo as a parameter
+    function getImportSearches(importingSourceFile: SourceFile, exportingModuleSymbol: Symbol, exportSymbol: Symbol, exportKind: ExportKind, { createSearch, checker }: State): { localSearches: Search[], moduleReExports: Symbol[] } {
         const exportName = exportSymbol.name;
 
         const searches: Search[] = [];
@@ -340,6 +388,7 @@ namespace ts.FindAllReferences {
             if (exportKind === ExportKind.Named) {
                 for (const { name, propertyName } of namedBindings.elements) {
                     if (propertyName && propertyName.text === exportName) {
+                        //Want to just include the propertyName node as a reference, *not* the renamed element. Important so we don't rename too much.
                         //`import { foo as bar }`
                         throw new Error("TODO");
                     }
@@ -355,7 +404,7 @@ namespace ts.FindAllReferences {
                     return;
                 }
                 const defaultImportAlias = checker.getSymbolAtLocation(name);
-                if (checker.getAliasedSymbol(defaultImportAlias) === exportSymbol) {
+                if (checker.getAliasedSymbol(defaultImportAlias, /*shallow*/ true) === exportSymbol) {
                     addSearch(name, defaultImportAlias);
                 }
             }
@@ -463,8 +512,8 @@ namespace ts.FindAllReferences {
     }
 
     function getInternedName(symbol: Symbol, location: Node): string { //rename this fn
-        // If this is an export or import specifier it could have been renamed using the 'as' syntax.
-        // If so we want to search for whatever under the cursor.
+        //If this is an export or import specifier it could have been renamed using the 'as' syntax.
+        //If so we want to search for whatever under the cursor.
         if (isImportOrExportSpecifierName(location)) {
             return location.text;
         }
@@ -512,7 +561,7 @@ namespace ts.FindAllReferences {
         //if this symbol is visible from its parent container, e.g. exported, then bail out -- NOT!!! used to check for 'symbol.parent'
         // if symbol correspond to the union property - bail out
         //NOTE: we need to check 'symbol.parent' to get things like properties, but for exports our algorithm will catch them
-        if ((symbol.parent && !symbol.declarations.some(isExport)) || (symbol.flags & SymbolFlags.SyntheticProperty)) {
+        if (symbol.parent || (symbol.flags & SymbolFlags.SyntheticProperty)) {
             return undefined;
         }
 
@@ -711,6 +760,16 @@ namespace ts.FindAllReferences {
         }
     }
 
+    //move
+    function getExportInfo(exportSymbol: Symbol, exportKind: ExportKind): ExportInfo | undefined {
+        const moduleSymbol = exportSymbol.parent;
+        const moduleDecl = moduleSymbol.declarations[0];
+        //const moduleDecl = getContainingModule(referenceLocation); //Or just symbol.parent....
+        //For export in a namespace, just rely on global search
+        const countExport = moduleDecl.kind === SyntaxKind.SourceFile || moduleDecl.name.kind === SyntaxKind.StringLiteral; //name
+        return countExport ? { moduleSymbol, kind: exportKind } : undefined;
+    }
+
     //new, review
     function getReferencesAtLocation(sourceFile: SourceFile, position: number, search: Search, parentSymbols: Symbol[], state: State) {
         const referenceLocation = getTouchingPropertyName(sourceFile, position);
@@ -738,27 +797,19 @@ namespace ts.FindAllReferences {
             //TODO: what for default exports?
             //TODO: handle imports here too.
             //'referenceLocation' is an identifier, so go up a level
+            //TODO: use relatedSymbol here? Or does it not matter for the nodes that will be exports?
+
             const { imported, exported } = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker);
             if (imported) {
                 const searchFile = imported.location.getSourceFile(); //go to the symbol we imported from and find references for it.
+                //This is in the source file of the import, so it will lead to finding export references.
+                //TODO: could this just call findAllRefsGloballyOrExported?????
                 getReferencesInContainer(searchFile, state.createSearch(imported.location, imported.symbol), state);
+                //Problem w/ below: we exclude the exporting module from being considered in `findAllRefsGloballyOrExported`. So must search in itself first.
+                //findAllRefsGloballyOrExported(state.createSearch(imported.location, imported.symbol), state, getExportKindForSymbol(imported.symbol));
             }
-            if (exported) {
-                const grandparent = referenceLocation.parent.parent; //name
-                if (grandparent.kind === ts.SyntaxKind.SourceFile) {
-                    findAllRefsForExport(state.checker.getSymbolAtLocation(grandparent), exported, state);
-                } else {
-                    Debug.assert(grandparent.kind === SyntaxKind.ModuleBlock);
-                    const moduleDecl = grandparent.parent as ModuleDeclaration;
-                    Debug.assert(moduleDecl.kind === SyntaxKind.ModuleDeclaration);
-                    if (moduleDecl.name.kind === SyntaxKind.StringLiteral) {
-                        findAllRefsForExport(state.checker.getSymbolAtLocation(moduleDecl.name), exported, state);
-                    }
-                    else {
-                        //Property of a namespace
-                        findAllRefsGlobally(state.createSearch(referenceLocation, relatedSymbol), state);
-                    }
-                }
+            if (exported !== undefined) {
+                findAllRefsGloballyOrExported(state.createSearch(referenceLocation, exported.symbol), state, exported.info);
             }
             return;
         }
@@ -808,54 +859,75 @@ namespace ts.FindAllReferences {
         }
     }
 
-    interface Exxxport { symbol: Symbol; location: Node; exportKind: ExportKind; } //name
+    //move
+    //function getContainingModule(node: Node): SourceFile | ModuleDeclaration {
+    //    return getAncestorWhere(node, (ancestor) => ancestor.kind === SyntaxKind.ModuleDeclaration || ancestor.kind === SyntaxKind.SourceFile) as SourceFile | ModuleDeclaration;
+    //}
+    //function getAncestorWhere(node: Node, predicate: (ancestor: Node) => boolean): Node | undefined {
+    //    do {
+    //        node = node.parent;
+    //    } while (node && !predicate(node));
+    //    return node;
+    //}
+
     //given a match, look for another symbol to search.
     //If we're at an import, look for what it imports.
     //If we're at an export, look for imports of it.
-    function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker): { imported?: { location: Node, symbol: Symbol }, exported?: Exxxport } {
+    function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker): { imported?: { location: Node, symbol: Symbol }, exported?: { symbol: Symbol, info: ExportInfo } } {
         let imported: { location: Node, symbol: Symbol } | undefined;
-        let exported: Exxxport | undefined;
+        let exported: { symbol: Symbol, info: ExportInfo } | undefined;
         const { parent } = node;
         if (isExportSpecifier(parent)) {
             //TODO: handle 'export as default' here. And also have an import if this is `import {foo as bar} from "baz";
-            return { exported: { symbol, location: node, exportKind: ExportKind.Named } };
+            //We are skipping over the dummy symbol for `export { foo }` and going straight to `foo`.
+            const symbol2 =checker.getAliasedSymbol(symbol, /*shallow*/true);
+            return { exported: { symbol: symbol2, info: getExportInfo(symbol, ExportKind.Named) } };
         }
 
         if (hasModifier(parent, ModifierFlags.Export)) {
             //test
-            const exportKind = hasModifier(parent, ModifierFlags.Default)
-                ? ExportKind.Default
-                : parent.kind === SyntaxKind.ExportAssignment
-                ? ExportKind.ExportEquals
-                : ExportKind.Named;
-            exported = { symbol, location: node, exportKind };
+            exported = { symbol, info: getExportInfo(symbol, getExportKindForNode(parent)) };
             //may be an 'export-import'???
         }
 
-        switch (parent.kind) {
-            case SyntaxKind.ImportEqualsDeclaration:
-                debugger; //!!!!!!!
-
-            case SyntaxKind.ImportSpecifier:
-            case SyntaxKind.ImportClause: {
-                const importSymbol = checker.getAliasedSymbol(symbol);
-                //TODO: import { default as foo } is a default import!!!!!
-                //TODO: just use `node` instead of `importSymbol.declarations[0]`? Might change "definition" text slightly...
-                imported = { symbol: importSymbol, location: importSymbol.declarations[0] };
-            }
+        if (nodeIsImport(node)) {
+            const importSymbol = checker.getAliasedSymbol(symbol, /*shallow*/true);
+            //TODO: import { default as foo } is a default import!!!!!
+            //TODO: just use `node` instead of `importSymbol.declarations[0]`? Might change "definition" text slightly...
+            imported = { symbol: importSymbol, location: importSymbol.declarations[0] };
             //A third kind of import is to "import * as foo". But we don't recursively find "import *" in other modules.
-               //Find-all-refs for a module should be done on the module specifier instead.
+            //Find-all-refs for a module should be done on the module specifier instead.
         }
 
         return { imported, exported };
     }
+    //neater
+    function nodeIsImport(node: Node): boolean {
+        const { parent } = node;
+        switch (parent.kind) {
+            case SyntaxKind.ImportEqualsDeclaration:
+                return (parent as ImportEqualsDeclaration).name === node;
+
+            case SyntaxKind.ImportSpecifier:
+                //test!
+                //If we're importing `{foo as bar}`, don't continue finding if there's a rename.
+                return !(parent as ImportSpecifier).propertyName;
+
+            case SyntaxKind.ImportClause:
+                Debug.assert((parent as ImportClause).name === node);
+                return true;
+
+            default:
+                return false;
+        }
+    }
 
     //neater
     //TODO: not sure when to use 'node' and when to use 'node.parent'... added `hasModifier(node, ModifierFlags.export)` for the use from `getSymbolScope`....
-    function isExport(node: Node) {
-        const { parent } = node;
-        return hasModifier(node, ModifierFlags.Export) || hasModifier(parent, ModifierFlags.Export) || isExportSpecifier(parent);
-    }
+    //function nodeIsExport(node: Node) {
+    //    const { parent } = node;
+    //    return hasModifier(node, ModifierFlags.Export) || hasModifier(parent, ModifierFlags.Export) || isExportSpecifier(parent);
+    //}
 
     function addStringOrCommentReference(sourceFile: SourceFile, position: number, state: State, search: Search) {
         // This wasn't the start of a token.  Check to see if it might be a

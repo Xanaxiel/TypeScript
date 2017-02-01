@@ -1270,17 +1270,17 @@ namespace ts {
             return resolveExternalModuleSymbol(node.parent.symbol);
         }
 
-        function getTargetOfExportSpecifier(node: ExportSpecifier): Symbol {
+        function getTargetOfExportSpecifier(node: ExportSpecifier, dontResolveAlias?: boolean): Symbol {
             return (<ExportDeclaration>node.parent.parent).moduleSpecifier ?
                 getExternalModuleMember(<ExportDeclaration>node.parent.parent, node) :
-                resolveEntityName(node.propertyName || node.name, SymbolFlags.Value | SymbolFlags.Type | SymbolFlags.Namespace);
+                resolveEntityName(node.propertyName || node.name, SymbolFlags.Value | SymbolFlags.Type | SymbolFlags.Namespace, /*ignoreErrors*/false, dontResolveAlias);
         }
 
         function getTargetOfExportAssignment(node: ExportAssignment): Symbol {
             return resolveEntityName(<EntityNameExpression>node.expression, SymbolFlags.Value | SymbolFlags.Type | SymbolFlags.Namespace);
         }
 
-        function getTargetOfAliasDeclaration(node: Declaration): Symbol {
+        function getTargetOfAliasDeclaration(node: Declaration, shallow: boolean): Symbol { //doc
             switch (node.kind) {
                 case SyntaxKind.ImportEqualsDeclaration:
                     return getTargetOfImportEqualsDeclaration(<ImportEqualsDeclaration>node);
@@ -1291,7 +1291,7 @@ namespace ts {
                 case SyntaxKind.ImportSpecifier:
                     return getTargetOfImportSpecifier(<ImportSpecifier>node);
                 case SyntaxKind.ExportSpecifier:
-                    return getTargetOfExportSpecifier(<ExportSpecifier>node);
+                    return getTargetOfExportSpecifier(<ExportSpecifier>node, /*dontResolveAlias*/shallow);
                 case SyntaxKind.ExportAssignment:
                     return getTargetOfExportAssignment(<ExportAssignment>node);
                 case SyntaxKind.NamespaceExportDeclaration:
@@ -1303,14 +1303,14 @@ namespace ts {
             return symbol && symbol.flags & SymbolFlags.Alias && !(symbol.flags & (SymbolFlags.Value | SymbolFlags.Type | SymbolFlags.Namespace)) ? resolveAlias(symbol) : symbol;
         }
 
-        function resolveAlias(symbol: Symbol): Symbol {
+        function resolveAlias(symbol: Symbol, shallow?: boolean): Symbol {
             Debug.assert((symbol.flags & SymbolFlags.Alias) !== 0, "Should only get Alias here.");
             const links = getSymbolLinks(symbol);
             if (!links.target) {
                 links.target = resolvingSymbol;
                 const node = getDeclarationOfAliasSymbol(symbol);
                 Debug.assert(!!node);
-                const target = getTargetOfAliasDeclaration(node);
+                const target = getTargetOfAliasDeclaration(node, shallow);
                 if (links.target === resolvingSymbol) {
                     links.target = target || unknownSymbol;
                 }

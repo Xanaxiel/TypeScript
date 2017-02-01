@@ -1096,7 +1096,7 @@ namespace FourSlash {
 
                 ts.zipWith(references, ranges, (reference, range) => {
                     if (reference.textSpan.start !== range.start || ts.textSpanEnd(reference.textSpan) !== range.end) {
-                        this.raiseError("Rename location results do not match.\n\nExpected: " + stringify(ranges) + "\n\nActual:" + JSON.stringify(references));
+                        this.raiseError("Rename location results do not match.\n\nExpected: " + stringify(ranges) + "\n\nActual:" + stringify(references));
                     }
                 });
             }
@@ -2498,7 +2498,7 @@ namespace FourSlash {
 
                 ts.zipWith(expectedRangesInFile, spansInFile, (expectedRange, span) => {
                     if (span.textSpan.start !== expectedRange.start || ts.textSpanEnd(span.textSpan) !== expectedRange.end) {
-                        this.raiseError(`verifyDocumentHighlights failed - span does not match, actual: ${JSON.stringify(span.textSpan)}, expected: ${expectedRange.start}--${expectedRange.end}`);
+                        this.raiseError(`verifyDocumentHighlights failed - span does not match, actual: ${stringify(span.textSpan)}, expected: ${expectedRange.start}--${expectedRange.end}`);
                     }
                 });
             }
