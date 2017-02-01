@@ -170,6 +170,9 @@ namespace ts.FindAllReferences {
         return result;
     }
 
+    //TODO:
+    //'exportKind' should be in 'search' so we can combine 'findAllRefsGlobally' and 'findAllRefsForExport'!!!!!!!
+
     function findAllRefsGlobally(search: Search, state: State) {
         for (const sourceFile of state.sourceFiles) {
             state.cancellationToken.throwIfCancellationRequested();
@@ -181,11 +184,11 @@ namespace ts.FindAllReferences {
     }
 
     //Use this only for an exported symbol! Also TODO: make sure we don't do this more than once!
-    function findAllRefsForExport(moduleSymbol: Symbol, { symbol, location, isDefault }: ImportOrExport, state: State): void {
+    function findAllRefsForExport(moduleSymbol: Symbol, { symbol, location, exportKind }: Exxxport, state: State): void {
         for (const sourceFile of state.sourceFiles) {
             state.cancellationToken.throwIfCancellationRequested();
 
-            const { localSearches, moduleReExports } = getImportSearches(sourceFile, moduleSymbol, location, symbol, isDefault, state);
+            const { localSearches, moduleReExports } = getImportSearches(sourceFile, moduleSymbol, location, symbol, exportKind, state);
             moduleReExports; //USE? nah
             for (const search of localSearches) {
                 getReferencesInContainer(sourceFile, search, state);
@@ -262,9 +265,13 @@ namespace ts.FindAllReferences {
         return getNameTable(sourceFile).get(name) !== undefined;
     }
 
+
+    const enum ExportKind { Named, Default, ExportEquals }
+
     //TODO: may be imported more than once, so return multiple results!!! TEST
     //TODO: decided I don't need moduleReExports...
-    function getImportSearches(importingSourceFile: SourceFile, exportingModuleSymbol: Symbol, exportLocation: Node, exportSymbol: Symbol, isDefault: boolean, { createSearch, checker }: State): { localSearches: Search[], moduleReExports: Symbol[] } {
+    //REMEMBER: 'export =' might be imported by a default or namespace import!!!!!!!!!!!!!!!! TEST
+    function getImportSearches(importingSourceFile: SourceFile, exportingModuleSymbol: Symbol, _exportLocation: Node, exportSymbol: Symbol, exportKind: ExportKind, { createSearch, checker }: State): { localSearches: Search[], moduleReExports: Symbol[] } {
         Debug.assert(exportSymbol.parent === exportingModuleSymbol); //kill?
         const exportName = exportSymbol.name;
 
@@ -278,17 +285,18 @@ namespace ts.FindAllReferences {
         }
 
         forEachImport(importingSourceFile, decl => {
-            if (decl.kind === SyntaxKind.ImportEqualsDeclaration) {
+            //Note:
+            if (decl.kind === SyntaxKind.ImportEqualsDeclaration) { //TEST
+                if (exportKind !== ExportKind.ExportEquals) {
+                    return;
+                }
+
                 const { moduleReference } = decl;
                 if (moduleReference.kind === SyntaxKind.ExternalModuleReference &&
                     moduleReference.expression.kind === SyntaxKind.StringLiteral &&
                     importsCorrectModule(moduleReference.expression as StringLiteral)) {
-                    // `import x = require("./x")`, so use the original symbol and search for its appearance as a property.
-                    //TODO: but if `export =` a function, this is an alias instead!!!
-                    //So don't have `isDefault`, have `enum ExportKind { Default, ExportEquals, Named }`
-
-                    //reExports.push();
-
+                    //`import x = require("./x")`.
+                    //Search for the local `x`.
                     const location = decl.name;
                     addSearch(location, checker.getSymbolAtLocation(location));
                 }
@@ -316,23 +324,20 @@ namespace ts.FindAllReferences {
 
             const { namedBindings } = importClause;
             if (namedBindings.kind === ts.SyntaxKind.NamespaceImport) {
-                // `import * as x from "./x", so use the original symbol and search for its appearance as a property.
-                addSearch(exportLocation, exportSymbol);
-                //TODO: export-import possible here too?
+                //`import * as x from "./x"
+                //Text search will catch this (must use the name)
+                //TODO: remember to test for '.default'...
+
+                //An `export =` may be imported by a namespace import. (TODO: TEST!)
+                if (exportKind === ExportKind.ExportEquals) {
+                    const location = namedBindings.name;
+                    addSearch(location, checker.getSymbolAtLocation(location)); //duplicate code
+                }
+
                 return;
             }
 
-            if (isDefault) {
-                const { name } = importClause;
-                if (!name) {
-                    return;
-                }
-                const defaultImportAlias = checker.getSymbolAtLocation(name);
-                if (checker.getAliasedSymbol(defaultImportAlias) === exportSymbol) {
-                    addSearch(name, defaultImportAlias);
-                }
-            }
-            else {
+            if (exportKind === ExportKind.Named) {
                 for (const { name, propertyName } of namedBindings.elements) {
                     if (propertyName && propertyName.text === exportName) {
                         //`import { foo as bar }`
@@ -341,6 +346,17 @@ namespace ts.FindAllReferences {
                     if (name.text === exportName) {
                         addSearch(name, checker.getSymbolAtLocation(name));
                     }
+                }
+            }
+            else {
+                //`export =` might be imported by a default import if `--allowSyntheticDefaultExports` is on, so this handles both ExportKind.Default and ExportKind.ExportEquals
+                const { name } = importClause;
+                if (!name) {
+                    return;
+                }
+                const defaultImportAlias = checker.getSymbolAtLocation(name);
+                if (checker.getAliasedSymbol(defaultImportAlias) === exportSymbol) {
+                    addSearch(name, defaultImportAlias);
                 }
             }
         });
@@ -656,9 +672,9 @@ namespace ts.FindAllReferences {
         */
     //This gets references within a scope.
     //TOOD: 'checkMark' is ugly...
-    function getReferencesInContainer(container: Node, search: Search, state: State, checkMark = true): void {
+    function getReferencesInContainer(container: Node, search: Search, state: State): void {
         const sourceFile = container.getSourceFile();
-        if (checkMark && state.markSearched(sourceFile, search.symbol)) { //Uh, but we've only searched in the container, not in the whole source file...
+        if (state.markSearched(sourceFile, search.symbol)) { //Uh, but we've only searched in the container, not in the whole source file...
             return;
         }
 
@@ -724,7 +740,7 @@ namespace ts.FindAllReferences {
             //'referenceLocation' is an identifier, so go up a level
             const { imported, exported } = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker);
             if (imported) {
-                const searchFile = imported.location.getSourceFile();
+                const searchFile = imported.location.getSourceFile(); //go to the symbol we imported from and find references for it.
                 getReferencesInContainer(searchFile, state.createSearch(imported.location, imported.symbol), state);
             }
             if (exported) {
@@ -792,29 +808,40 @@ namespace ts.FindAllReferences {
         }
     }
 
-    interface ImportOrExport { symbol: Symbol; location: Node; isDefault: boolean; } //name
-    function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker): { imported?: ImportOrExport, exported?: ImportOrExport } {
-        let imported: ImportOrExport | undefined;
-        let exported: ImportOrExport | undefined;
+    interface Exxxport { symbol: Symbol; location: Node; exportKind: ExportKind; } //name
+    //given a match, look for another symbol to search.
+    //If we're at an import, look for what it imports.
+    //If we're at an export, look for imports of it.
+    function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker): { imported?: { location: Node, symbol: Symbol }, exported?: Exxxport } {
+        let imported: { location: Node, symbol: Symbol } | undefined;
+        let exported: Exxxport | undefined;
         const { parent } = node;
-        if (hasModifier(parent, ModifierFlags.Export)) {
-            exported = { symbol, location: node, isDefault: hasModifier(parent, ModifierFlags.Default) };
-            //may be an 'export-import'!!!!! TODO!
-        }
-        else if (isExportSpecifier(parent)) {
+        if (isExportSpecifier(parent)) {
             //TODO: handle 'export as default' here. And also have an import if this is `import {foo as bar} from "baz";
-            return { exported: { symbol, location: node, isDefault: false } };
+            return { exported: { symbol, location: node, exportKind: ExportKind.Named } };
+        }
+
+        if (hasModifier(parent, ModifierFlags.Export)) {
+            //test
+            const exportKind = hasModifier(parent, ModifierFlags.Default)
+                ? ExportKind.Default
+                : parent.kind === SyntaxKind.ExportAssignment
+                ? ExportKind.ExportEquals
+                : ExportKind.Named;
+            exported = { symbol, location: node, exportKind };
+            //may be an 'export-import'???
         }
 
         switch (parent.kind) {
             case SyntaxKind.ImportEqualsDeclaration:
-                TODO!!! (before was just fallthrough)
+                debugger; //!!!!!!!
 
             case SyntaxKind.ImportSpecifier:
             case SyntaxKind.ImportClause: {
                 const importSymbol = checker.getAliasedSymbol(symbol);
                 //TODO: import { default as foo } is a default import!!!!!
-                imported = { symbol: importSymbol, location: importSymbol.declarations[0], isDefault: parent.kind === SyntaxKind.ImportSpecifier };
+                //TODO: just use `node` instead of `importSymbol.declarations[0]`? Might change "definition" text slightly...
+                imported = { symbol: importSymbol, location: importSymbol.declarations[0] };
             }
             //A third kind of import is to "import * as foo". But we don't recursively find "import *" in other modules.
                //Find-all-refs for a module should be done on the module specifier instead.

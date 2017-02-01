@@ -20,8 +20,7 @@ const [moduleFoo0, f0, moduleBar0, foo0, moduleFoo1, foo1, f1, moduleBar1, foo2]
 //verify.singleReferenceGroup('import foo = require("foo")', [foo0, foo1, foo2]);
 //foo2 should be in here somewhere...
 verify.referenceGroups(foo0, [
-    { definition: 'import foo = require("foo")', ranges: [foo0, foo1] },
+    { definition: 'import foo = require("foo")', ranges: [foo0, foo1, foo2] },
     { definition: 'module "foo"', ranges: [moduleFoo0, moduleFoo1] },
-    more...
 ]);
 //verify.singleReferenceGroup("var f: number", [f0, f1]);
