@@ -11,7 +11,7 @@ const ranges = test.ranges();
 const [r0, r1, r2] = ranges;
 verify.referenceGroups(r0, [
     { definition: "function f(): void", ranges: [r0] },
-    { definition: "import g", ranges: [r1, r2] } //TODO: this is ugly text... want just "import g"
+    { definition: "import g", ranges: [r1, r2] }
 ]);
 verify.referenceGroups(r1, [
     { definition: "import g", ranges: [r1, r2] },
