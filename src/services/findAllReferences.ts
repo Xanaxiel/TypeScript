@@ -143,7 +143,7 @@ namespace ts.FindAllReferences {
 
         if (isExportSpecifier(node.parent)) {
             exportInfo = getExportInfo(symbol, ExportKind.Named);
-            symbol = checker.getAliasedSymbol(symbol, /*shallow*/true);
+            symbol = checker.getShallowTargetOfExportSpecifier(symbol);
         }
 
         const isExport = symbol.flags & SymbolFlags.Export;
@@ -198,11 +198,6 @@ namespace ts.FindAllReferences {
         return ExportKind.Named;
     }
 
-
-    //TODO:
-    //'exportKind' should be in 'search' so we can combine 'findAllRefsGlobally' and 'findAllRefsForExport'!!!!!!!
-
-    //destructure 'search'
     interface ExportInfo { moduleSymbol: Symbol, kind: ExportKind }
     function findAllRefsGloballyOrExported(search: Search, state: State, exportInfo?: ExportInfo) {
         //const moduleSymbol = exportKind !== undefined ? search.symbol.parent : undefined;
@@ -226,31 +221,10 @@ namespace ts.FindAllReferences {
             //NOTE: we might be able to detect this based on whether any 'import *' exists anywhere...
             getInternedName; //Pretty sure don't need this any more!
             if (sourceFileHasName(sourceFile, search.text)) {
-                getReferencesInContainer(sourceFile, state.createSearch(search.location, search.symbol), state);
+                getReferencesInContainer(sourceFile, search, state);
             }
         }
     }
-
-    //Use this only for an exported symbol! Also TODO: make sure we don't do this more than once!
-    /*function findAllRefsForExport(moduleSymbol: Symbol, { symbol, location, exportKind }: Exxxport, state: State): void {
-        for (const sourceFile of state.sourceFiles) {
-            state.cancellationToken.throwIfCancellationRequested();
-
-            const { localSearches, moduleReExports } = getImportSearches(sourceFile, moduleSymbol, location, symbol, exportKind, state);
-            moduleReExports; //USE? nah
-            for (const search of localSearches) {
-                getReferencesInContainer(sourceFile, search, state);
-            }
-
-            //Also, it might be available as a named property.
-            //TODO: if a default export, look for '.default'!
-            //NOTE: we might be able to detect this based on whether any 'import *' exists anywhere...
-            getInternedName; //?
-            if (sourceFileHasName(sourceFile, symbol.name)) {
-                getReferencesInContainer(sourceFile, state.createSearch(location, symbol), state);
-            }
-        }
-    }*/
 
     /** getReferencedSymbols for special node kinds. */
     function getReferencedSymbolsSpecial(node: Node, sourceFiles: SourceFile[], checker: TypeChecker, cancellationToken: CancellationToken): ReferencedSymbol[] | undefined {
@@ -404,7 +378,7 @@ namespace ts.FindAllReferences {
                     return;
                 }
                 const defaultImportAlias = checker.getSymbolAtLocation(name);
-                if (checker.getAliasedSymbol(defaultImportAlias, /*shallow*/ true) === exportSymbol) {
+                if (checker.getAliasedSymbol(defaultImportAlias) === exportSymbol) {
                     addSearch(name, defaultImportAlias);
                 }
             }
@@ -880,7 +854,7 @@ namespace ts.FindAllReferences {
         if (isExportSpecifier(parent)) {
             //TODO: handle 'export as default' here. And also have an import if this is `import {foo as bar} from "baz";
             //We are skipping over the dummy symbol for `export { foo }` and going straight to `foo`.
-            const symbol2 =checker.getAliasedSymbol(symbol, /*shallow*/true);
+            const symbol2 = checker.getShallowTargetOfExportSpecifier(symbol); //dup: find other call to getShallow...
             return { exported: { symbol: symbol2, info: getExportInfo(symbol, ExportKind.Named) } };
         }
 
@@ -891,7 +865,9 @@ namespace ts.FindAllReferences {
         }
 
         if (nodeIsImport(node)) {
-            const importSymbol = checker.getAliasedSymbol(symbol, /*shallow*/true);
+            //const importSymbol = checker.getAliasedSymbol(symbol);
+            //Problem: 'getAliasedSymbol' apparently follows multiple aliases!!! (In 'renameImportOfExportEquals' it went from `import { N } from "test"` to `namespace N`!!!
+
             //TODO: import { default as foo } is a default import!!!!!
             //TODO: just use `node` instead of `importSymbol.declarations[0]`? Might change "definition" text slightly...
             imported = { symbol: importSymbol, location: importSymbol.declarations[0] };

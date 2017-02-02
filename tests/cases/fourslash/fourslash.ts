@@ -183,6 +183,8 @@ declare namespace FourSlashInterface {
         verifyGetEmitOutputForCurrentFile(expected: string): void;
         verifyGetEmitOutputContentsForCurrentFile(expected: ts.OutputFile[]): void;
         noReferences(markerNameOrRange?: string | Range): void;
+        aliasedSymbol(startRange: Range, ...declarationRanges: Range[]): void;
+        symbolAtLocation(startRange: Range, ...declarationRanges: Range[]): void;
         /**
          * @deprecated, prefer 'referenceGroups'
          * Like `referencesAre`, but goes to `start` first.

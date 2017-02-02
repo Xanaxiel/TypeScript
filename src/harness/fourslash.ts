@@ -179,6 +179,8 @@ namespace FourSlash {
         // Language service instance
         private languageServiceAdapterHost: Harness.LanguageService.LanguageServiceAdapterHost;
         private languageService: ts.LanguageService;
+        private program: ts.Program;
+        private checker: ts.TypeChecker;
         private cancellationToken: TestCancellationToken;
 
         // The current caret position in the active file
@@ -364,6 +366,9 @@ namespace FourSlash {
 
             // Open the first file by default
             this.openFile(0);
+
+            this.program = this.languageService.getProgram();
+            this.checker = this.program.getTypeChecker();
         }
 
         private getFileContent(fileName: string): string {
@@ -856,7 +861,65 @@ namespace FourSlash {
             }
         }
 
-        public verifyReferencesAre(expectedReferences: Range[]) {
+        private verifyRange(desc: string, expected: Range, actual: ts.Node) {
+            const actualStart = actual.getStart();
+            const actualEnd = actual.getEnd();
+            if (actualStart !== expected.start || actualEnd !== expected.end) {
+                this.raiseError(`${desc} should be ${expected.start}-${expected.end}, got ${actualStart}-${actualEnd}`);
+            }
+        }
+
+        private getSourceFile(): ts.SourceFile {
+            const { fileName } = this.activeFile;
+            const x = this.program.getSourceFile(fileName);
+            if (!x) {
+                throw new Error("Could not get source file " + fileName);
+            }
+            return x;
+        }
+        private getNode(): ts.Node {
+            return ts.getTouchingPropertyName(this.getSourceFile(), this.currentCaretPosition);
+        }
+
+        private goToAndGetNode(range: Range): ts.Node {
+            this.goToRangeStart(range);
+            const node = this.getNode();
+            this.verifyRange("touching property name", range, node);
+            return node;
+        }
+
+        private verifySymbol(symbol: ts.Symbol, declarationRanges: Range[]) {
+            const { declarations } = symbol;
+            if (declarations.length !== declarationRanges.length) {
+                this.raiseError(`Expected to get ${declarationRanges.length} declarations, got ${declarations.length}`);
+            }
+
+            ts.zipWith(declarations, declarationRanges, (decl, range) => {
+                this.verifyRange("symbol declaration", range, decl);
+            });
+        }
+
+        public verifyAliasedSymbol(startRange: Range, declarationRanges: Range[]): void {
+            const node = this.goToAndGetNode(startRange);
+            const symbol = this.checker.getSymbolAtLocation(node);
+            if (!symbol) {
+                this.raiseError("Could not get symbol at location");
+            }
+            const aliasedSymbol = this.checker.getAliasedSymbol(symbol);
+            this.verifySymbol(aliasedSymbol, declarationRanges);
+        }
+
+        public verifySymbolAtLocation(startRange: Range, declarationRanges: Range[]): void {
+            const node = this.goToAndGetNode(startRange);
+            const symbol = this.checker.getSymbolAtLocation(node);
+            console.log(symbol);
+            if (!symbol) {
+                this.raiseError("Could not get symbol at location");
+            }
+            this.verifySymbol(symbol, declarationRanges);
+        }
+
+        private verifyReferencesAre(expectedReferences: Range[]) {
             const actualReferences = this.getReferencesAtCaret() || [];
 
             if (actualReferences.length > expectedReferences.length) {
@@ -3397,8 +3460,12 @@ namespace FourSlashInterface {
             this.state.verifyGetEmitOutputContentsForCurrentFile(expected);
         }
 
-        public referencesAre(ranges: FourSlash.Range[]) {
-            this.state.verifyReferencesAre(ranges);
+        public aliasedSymbol(startRange: FourSlash.Range, ...declarationRanges: FourSlash.Range[]) {
+            this.state.verifyAliasedSymbol(startRange, declarationRanges);
+        }
+
+        public symbolAtLocation(startRange: FourSlash.Range, ...declarationRanges: FourSlash.Range[]) {
+            this.state.verifySymbolAtLocation(startRange, declarationRanges);
         }
 
         public referencesOf(start: FourSlash.Range, references: FourSlash.Range[]) {

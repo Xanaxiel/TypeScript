@@ -2400,7 +2400,9 @@
 
         getConstantValue(node: EnumMember | PropertyAccessExpression | ElementAccessExpression): number;
         isValidPropertyAccess(node: PropertyAccessExpression | QualifiedName, propertyName: string): boolean;
-        getAliasedSymbol(symbol: Symbol, shallow?: boolean): Symbol; //doc
+        getAliasedSymbol(symbol: Symbol): Symbol; //doc
+        //KLUDGE
+        getShallowTargetOfExportSpecifier(symbol: Symbol): Symbol;
         getExportsOfModule(moduleSymbol: Symbol): Symbol[];
         /** Unlike `getExportsOfModule`, this includes properties of an `export =` value. */
         /* @internal */ getExportsAndPropertiesOfModule(moduleSymbol: Symbol): Symbol[];
