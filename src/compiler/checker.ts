@@ -1288,7 +1288,7 @@ namespace ts {
             return resolveEntityName(<EntityNameExpression>node.expression, SymbolFlags.Value | SymbolFlags.Type | SymbolFlags.Namespace);
         }
 
-        function getTargetOfAliasDeclaration(node: Declaration): Symbol { //`shallow` bad!!!!!
+        function getTargetOfAliasDeclaration(node: Declaration): Symbol {
             switch (node.kind) {
                 case SyntaxKind.ImportEqualsDeclaration:
                     return getTargetOfImportEqualsDeclaration(<ImportEqualsDeclaration>node);
@@ -1311,6 +1311,7 @@ namespace ts {
             return symbol && symbol.flags & SymbolFlags.Alias && !(symbol.flags & (SymbolFlags.Value | SymbolFlags.Type | SymbolFlags.Namespace)) ? resolveAlias(symbol) : symbol;
         }
 
+        //TODO: write version of this that doesn't recursively call `resolveSymbol`
         function resolveAlias(symbol: Symbol): Symbol {
             Debug.assert((symbol.flags & SymbolFlags.Alias) !== 0, "Should only get Alias here.");
             const links = getSymbolLinks(symbol);
