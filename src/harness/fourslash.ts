@@ -179,8 +179,6 @@ namespace FourSlash {
         // Language service instance
         private languageServiceAdapterHost: Harness.LanguageService.LanguageServiceAdapterHost;
         private languageService: ts.LanguageService;
-        private program: ts.Program;
-        private checker: ts.TypeChecker;
         private cancellationToken: TestCancellationToken;
 
         // The current caret position in the active file
@@ -366,9 +364,6 @@ namespace FourSlash {
 
             // Open the first file by default
             this.openFile(0);
-
-            this.program = this.languageService.getProgram();
-            this.checker = this.program.getTypeChecker();
         }
 
         private getFileContent(fileName: string): string {
@@ -869,9 +864,26 @@ namespace FourSlash {
             }
         }
 
+        private _program: ts.Program; //lazy
+        private _checker: ts.TypeChecker; //lazy
+
+        private getProgram(): ts.Program {
+            if (this._program) {
+                this._program = this.languageService.getProgram();
+            }
+            return this._program;
+        }
+
+        private getChecker() {
+            if (this._checker) {
+                this._checker = this.getProgram().getTypeChecker();
+            }
+            return this._checker;
+        }
+
         private getSourceFile(): ts.SourceFile {
             const { fileName } = this.activeFile;
-            const x = this.program.getSourceFile(fileName);
+            const x = this.getProgram().getSourceFile(fileName);
             if (!x) {
                 throw new Error("Could not get source file " + fileName);
             }
@@ -901,18 +913,17 @@ namespace FourSlash {
 
         public verifyAliasedSymbol(startRange: Range, declarationRanges: Range[]): void {
             const node = this.goToAndGetNode(startRange);
-            const symbol = this.checker.getSymbolAtLocation(node);
+            const symbol = this.getChecker().getSymbolAtLocation(node);
             if (!symbol) {
                 this.raiseError("Could not get symbol at location");
             }
-            const aliasedSymbol = this.checker.getAliasedSymbol(symbol);
+            const aliasedSymbol = this.getChecker().getAliasedSymbol(symbol);
             this.verifySymbol(aliasedSymbol, declarationRanges);
         }
 
         public verifySymbolAtLocation(startRange: Range, declarationRanges: Range[]): void {
             const node = this.goToAndGetNode(startRange);
-            const symbol = this.checker.getSymbolAtLocation(node);
-            console.log(symbol);
+            const symbol = this.getChecker().getSymbolAtLocation(node);
             if (!symbol) {
                 this.raiseError("Could not get symbol at location");
             }
