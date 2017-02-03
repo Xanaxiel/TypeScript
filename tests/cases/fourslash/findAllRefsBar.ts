@@ -23,4 +23,3 @@ const imports2 = { definition: "(alias) f(): void\nimport f", ranges: bRefs }
 verify.referenceGroups(aRefs, [fs, imports1]);
 verify.referenceGroups(b0, [imports1, fs]);
 verify.referenceGroups(b1, [imports2, fs]);
-//verify.referenceGroups(bRefs, [imports, vars]);

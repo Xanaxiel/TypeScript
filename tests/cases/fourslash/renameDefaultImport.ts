@@ -26,10 +26,10 @@ verify.referenceGroups(B1, [
 ]);
 
 goTo.rangeStart(C);
-verify.renameLocations(false, false, [C, B0, B1]);
+verify.renameLocations(false, false, ranges);
 
 const rangesInB = [B0, B1];
 for (const r of rangesInB) {
     goTo.rangeStart(r);
-    verify.renameLocations(false, false, rangesInB);
+    verify.renameLocations(false, false, [B0, B1]);
 }

@@ -13,12 +13,6 @@ verify.referenceGroups(r0, [
     { definition: "function f(): void", ranges: [r0] },
     { definition: "import g", ranges: [r1, r2] }
 ]);
-verify.referenceGroups(r1, [
-    { definition: "import g", ranges: [r1, r2] },
-    { definition: "function f(): void", ranges: [r0] }
-]);
-verify.referenceGroups(r2, [
-    { definition: "(alias) g(): void\nimport g", ranges: [r1, r2] },
-    { definition: "function f(): void", ranges: [r0] }
-]);
+verify.referenceGroups(r1, [{ definition: "import g", ranges: [r1, r2] }]);
+verify.referenceGroups(r2, [{ definition: "(alias) g(): void\nimport g", ranges: [r1, r2] }]);
 verify.goToDefinition("ref", "def");
