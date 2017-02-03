@@ -3928,6 +3928,12 @@ namespace ts {
     export function isExportSpecifier(node: Node): node is ExportSpecifier {
         return node.kind === SyntaxKind.ExportSpecifier;
     }
+    //move
+    export function parentIsShorthandExportSpecifier(node: Node): boolean {
+        const { parent } = node;
+        //if we have `export { foo as bar }` and start on `bar`, just find refs for that, not for `foo`.
+        return isExportSpecifier(parent) && !(parent.propertyName && parent.name === node);
+    }
 
     export function isModuleOrEnumDeclaration(node: Node): node is ModuleDeclaration | EnumDeclaration {
         return node.kind === SyntaxKind.ModuleDeclaration || node.kind === SyntaxKind.EnumDeclaration;

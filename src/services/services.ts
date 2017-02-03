@@ -1943,6 +1943,7 @@ namespace ts {
     }
 
     /* @internal */
+    //Note: if an identifier is `__foo` the name table will have it as `___foo`.
     export function getNameTable(sourceFile: SourceFile): Map<number> {
         if (!sourceFile.nameTable) {
             initializeNameTable(sourceFile);

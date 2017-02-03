@@ -139,6 +139,7 @@ namespace ts.FindAllReferences {
         function createSearch(location: Node, symbol: Symbol, symbols: Symbol[] = [symbol]): Search {
             // Get the text to search for.
             // Note: if this is an external module symbol, the name doesn't include quotes.
+            //TODO: probably don't need to strip quotes?
             const text = stripQuotes(getDeclaredName(checker, symbol, location));
             return { location, symbol, symbols, text, includes };
 
@@ -155,8 +156,7 @@ namespace ts.FindAllReferences {
         let exportInfo: ExportInfo | undefined;
 
         //Dont start on an export
-        if (isExportSpecifier(node.parent)) {
-            //exportInfo = getExportInfo(symbol, ExportKind.Named);
+        if (parentIsShorthandExportSpecifier(node)) {
             symbol = checker.getShallowTargetOfExportSpecifier(symbol);
         }
 
@@ -226,7 +226,11 @@ namespace ts.FindAllReferences {
             state.cancellationToken.throwIfCancellationRequested();
 
             if (exportInfo !== undefined) {
-                const { localSearches } = getImportSearches(sourceFile, exportInfo.moduleSymbol, search.symbol, exportInfo.kind, state); //TODO: get a combined search?
+                const { localSearches, singles } = getImportSearches(sourceFile, exportInfo.moduleSymbol, search.symbol, exportInfo.kind, state); //TODO: get a combined search?
+                for (const single of singles) {
+                    //Just add it directly!
+                    state.getReferencedSymbol(search.symbol, search.location).references.push(getReferenceEntryFromNode(single));
+                }
                 for (const search of localSearches) {
                     getReferencesInContainer(sourceFile, search, state);
                 } //TODO: only do this for wierdly-named imports, so we don't duplicate work... although getReferencesInContainer checks for that too....
@@ -300,7 +304,8 @@ namespace ts.FindAllReferences {
     }*/
 
     function sourceFileHasName(sourceFile: SourceFile, name: string): boolean {
-        return getNameTable(sourceFile).get(name) !== undefined;
+        //TODO: store escaped text on the Search object
+        return getNameTable(sourceFile).get(escapeIdentifier(name)) !== undefined;
     }
 
 
@@ -310,10 +315,11 @@ namespace ts.FindAllReferences {
     //TODO: decided I don't need moduleReExports...
     //REMEMBER: 'export =' might be imported by a default or namespace import!!!!!!!!!!!!!!!! TEST
     //TODO: just take the exportinfo as a parameter
-    function getImportSearches(importingSourceFile: SourceFile, exportingModuleSymbol: Symbol, exportSymbol: Symbol, exportKind: ExportKind, { createSearch, checker }: State): { localSearches: Search[], moduleReExports: Symbol[] } {
+    function getImportSearches(importingSourceFile: SourceFile, exportingModuleSymbol: Symbol, exportSymbol: Symbol, exportKind: ExportKind, { createSearch, checker, isForRename }: State): { localSearches: Search[], moduleReExports: Symbol[], singles: Node[] } {
         const exportName = exportSymbol.name;
 
         const searches: Search[] = [];
+        let singles: Node[] = [];
         function addSearch(location: Node, symbol: Symbol) { searches.push(createSearch(location, symbol)); }
 
         const reExports: Symbol[] = []; //!!!
@@ -380,8 +386,14 @@ namespace ts.FindAllReferences {
                     for (const { name, propertyName } of (namedBindings as NamedImports).elements) {
                         if (propertyName && propertyName.text === exportName) {
                             //Want to just include the propertyName node as a reference, *not* the renamed element. Important so we don't rename too much.
-                            //`import { foo as bar }`
-                            throw new Error("TODO");
+                            //Change `import { foo as bar }` to `import { oof as bar }` and leave the rest alone!
+                            if (isForRename) {
+                                singles.push(propertyName); //test that renaming works!!!
+                            }
+                            else {
+                                addSearch(name, checker.getSymbolAtLocation(name)); //dup of below
+                            }
+
                         }
                         if (name.text === exportName) {
                             addSearch(name, checker.getSymbolAtLocation(name));
@@ -402,7 +414,7 @@ namespace ts.FindAllReferences {
             }
         });
 
-        return { localSearches: searches, moduleReExports: reExports };
+        return { localSearches: searches, moduleReExports: reExports, singles };
     }
 
     //TODO: handle export-import
@@ -521,7 +533,7 @@ namespace ts.FindAllReferences {
      * @returns undefined if the scope cannot be determined, implying that
      * a reference to a symbol can occur anywhere.
      */
-    function getSymbolScope(symbol: Symbol, node: Node): Node | undefined { //TODO: kill _node
+    function getSymbolScope(symbol: Symbol, _node: Node): Node | undefined { //TODO: kill _node
         // If this is the symbol of a named function expression or named class expression,
         // then named references are limited to its own scope.
         const valueDeclaration = symbol.valueDeclaration;
@@ -558,7 +570,7 @@ namespace ts.FindAllReferences {
         //If it's a property of something, need to search globally.
         //If it's a symbol on a module, we will recurse once we see an export.
         //For UMD export, its symbol.parent is the module it aliases, and symbol.parent.globalExports will be set., we search globally of course.
-        if (symbol.parent && (node.parent.kind === SyntaxKind.NamespaceExportDeclaration || !(symbol.parent.flags & SymbolFlags.Module))) {
+        if (symbol.parent && (!(symbol.parent.flags & SymbolFlags.Module)) || isUmdSymbol(symbol) ) {
             return undefined;
         }
 
@@ -588,6 +600,10 @@ namespace ts.FindAllReferences {
         //If symbol.parent it means that we saw symbol.parent.flags & SymbolFlags.Module above (else would immediately return undefined)
         //If symbol.parent, this is an export from a module *or namespace*. For an export from a namespace, check the entire source file.
         return symbol.parent ? scope.getSourceFile() : scope;
+    }
+
+    function isUmdSymbol(symbol: Symbol) {
+        return symbol.declarations.some(node => node.kind === SyntaxKind.NamespaceExportDeclaration);
     }
 
     function getPossibleSymbolReferencePositions(sourceFile: SourceFile, symbolName: string, start: number, end: number, cancellationToken: CancellationToken): number[] {
@@ -796,6 +812,7 @@ namespace ts.FindAllReferences {
 
         if (relatedSymbol) {
             //Actually, could just always skip export specifiers (no `seenExportSpecifier`)??? Handled below.
+            //TODO: what about .propertyName?
             if (isExportSpecifier(referenceLocation.parent) && state.seenExportSpecifier(referenceLocation.parent)) {
                 return;
             }
@@ -814,7 +831,7 @@ namespace ts.FindAllReferences {
             //
             //TODO: For a rename, *don't* traverse through imports *ever*. Want to rename the most local symbol possible.
             //This requires ability for rename to change `import { x }` to `import { x as y }`.
-            if (imported && !(state.isForRename && imported.isRenameImport)) {
+            if (imported && !(imported.isRenameImport)) { //TODO: state.isForRename && imported.isRenameImport? But that would change lots of tests.
                 const searchFile = imported.location.getSourceFile(); //go to the symbol we imported from and find references for it.
                 //This is in the source file of the import, so it will lead to finding export references.
                 //TODO: could this just call findAllRefsGloballyOrExported?????
@@ -831,6 +848,7 @@ namespace ts.FindAllReferences {
 
         //might be `export { foo }. In this case, if we are searching for `foo` the symbol won't match, since the symbol at `export { foo }` is an alias to it.`
         //TODO: test `export default foo;`
+        //TODO: test for { foo as bar }
         if (isExportSpecifier(referenceLocation.parent)) {
 
             const aliased = state.checker.getShallowTargetOfExportSpecifier(referenceSymbol);
@@ -892,7 +910,7 @@ namespace ts.FindAllReferences {
         function addReferenceToRelatedSymbol(node: Node, relatedSymbol: Symbol) {
             const references = state.getReferencedSymbol(relatedSymbol, search.location).references;
             if (state.implementations) {
-                getImplementationReferenceEntryForNode(node, references, state.checker);
+                getImplementationReferenceEntryForNode(node, references, state.checker); //neater
             }
             else {
                 references.push(getReferenceEntryFromNode(node));
@@ -1010,10 +1028,15 @@ namespace ts.FindAllReferences {
             case SyntaxKind.ImportEqualsDeclaration:
                 return (parent as ImportEqualsDeclaration).name === node;
 
-            case SyntaxKind.ImportSpecifier:
+            case SyntaxKind.ImportSpecifier: {
                 //test!
                 //If we're importing `{foo as bar}`, don't continue finding if there's a rename.
-                return !(parent as ImportSpecifier).propertyName;
+                //E.g. `import  {foo as bar }`
+                //If we're at `bar`, don't continue looking for the imported symbol.
+                //But if we're at `foo`, then do.
+                const { propertyName } = parent as ImportSpecifier;
+                return propertyName === undefined || propertyName === node;
+            }
 
             case SyntaxKind.ImportClause:
                 Debug.assert((parent as ImportClause).name === node);
