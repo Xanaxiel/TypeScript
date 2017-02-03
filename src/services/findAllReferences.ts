@@ -92,9 +92,8 @@ namespace ts.FindAllReferences {
         const sourceFileToSeenSymbols: Array<Array<true>> = [];
         const seenContainingTypeReferences: Array<true> = [];
 
-        //Shouldn't it be a compile error to have extra prop?
         return { sourceFiles, originalLocation, checker, cancellationToken, searchMeaning, inheritsFromCache, ...options,
-            markSearched, markSeenContainingTypeReference, addStringOrCommentReference, getReferencePusher, addReferences, createSearch, x: 3 };
+            markSearched, markSeenContainingTypeReference, addStringOrCommentReference, getReferencePusher, addReferences, createSearch };
 
         function markSearched(sourceFile: SourceFile, symbol: Symbol): boolean {
             const sourceId = getNodeId(sourceFile);
