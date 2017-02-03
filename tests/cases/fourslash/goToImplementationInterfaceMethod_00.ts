@@ -22,4 +22,4 @@
 //// }
 
 verify.allRangesAppearInImplementationList("function_call");
-verify.allRangesAppearInImplementationList("declaration");
+//verify.allRangesAppearInImplementationList("declaration");
