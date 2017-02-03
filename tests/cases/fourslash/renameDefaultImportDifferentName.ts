@@ -16,8 +16,14 @@ verify.occurrencesAtPositionCount(1);
 
 const ranges = test.ranges();
 const [C, B0, B1] = ranges;
-verify.referenceGroups([C, B0], [{ definition: "class C", ranges }]);
-verify.referenceGroups(B1, [{ definition: "constructor C(): B", ranges }]);
+const classes = { definition: "class C", ranges: [C] };
+const imports = { definition: "import B", ranges: [B0, B1] };
+verify.referenceGroups(C, [classes, imports]);
+verify.referenceGroups(B0, [imports, classes]);
+verify.referenceGroups(B1, [
+    { definition: "(alias) new B(): B\nimport B", ranges: [B0, B1] },
+    classes
+]);
 
 goTo.rangeStart(C);
 verify.renameLocations(false, false, [C, B0, B1]);

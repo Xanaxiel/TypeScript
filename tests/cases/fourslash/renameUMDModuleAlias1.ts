@@ -10,4 +10,7 @@
 //// /// <reference path="0.d.ts" />
 //// [|myLib|].doThing();
 
-verify.rangesAreRenameLocations();
+//verify.rangesAreRenameLocations();
+const [r0, r1] = test.ranges();
+goTo.rangeStart(r0);
+verify.renameLocations(false, false, [r0, r1]);

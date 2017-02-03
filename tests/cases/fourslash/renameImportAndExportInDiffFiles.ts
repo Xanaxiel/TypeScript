@@ -9,9 +9,9 @@
 
 const ranges = test.ranges();
 const [r0, r1, r2] = ranges;
-verify.referenceGroups([r0, r2], [{ definition: "var a: any", ranges }]);
-verify.referenceGroups(r1, [
-    { definition: "import a", ranges: [r1, r2] },
-    { definition: "var a: any", ranges: [r0] }
-]);
+const vars = { definition: "var a: any", ranges: [r0] };
+const imports = { definition: "import a", ranges: [r1, r2] };
+verify.referenceGroups(r0, [vars, imports]);
+verify.referenceGroups(r1, [imports, vars]);
+verify.referenceGroups(r2, [imports, vars]);
 verify.rangesAreRenameLocations();

@@ -8,5 +8,4 @@
 ////var mod = require('./a');
 ////var t = mod./**/[|area|](10);
 
-goTo.marker();
-verify.renameLocations( /*findInStrings*/ false, /*findInComments*/ false);
+verify.rangesAreRenameLocations();
