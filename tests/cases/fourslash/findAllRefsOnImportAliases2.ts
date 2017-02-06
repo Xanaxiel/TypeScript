@@ -20,10 +20,10 @@ const c2s =  { definition: "import C2", ranges: [c2_0, c2_1] };
 
 const classes = { definition: "class Class", ranges: [class0, class2] };
 
-//verify.referenceGroups([class0, class2], [classes, c2s]);
-//verify.referenceGroups(class1, [{ definition: "import C2", ranges: [class1] }]);
+verify.referenceGroups([class0, class2], [classes, c2s]);
+verify.referenceGroups(class1, [{ definition: "import C2", ranges: [class1] }]);
 
-//verify.referenceGroups(c2_0, [c2s])
-//verify.referenceGroups(c2_1, [{ definition: "(alias) new C2(): C2\nimport C2", ranges: c2Ranges }]);
+verify.referenceGroups(c2_0, [c2s])
+verify.referenceGroups(c2_1, [{ definition: "(alias) new C2(): C2\nimport C2", ranges: c2Ranges }]);
 
 verify.singleReferenceGroup("import C3", ranges.get("C3"));
