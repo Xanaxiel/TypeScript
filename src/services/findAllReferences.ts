@@ -97,7 +97,8 @@ namespace ts.FindAllReferences {
         readonly text: string;
         readonly escapedText: string;
 
-        includes(symbol: Symbol): boolean;
+        // Need to make this a property so TypeScript's spread operator allows it
+        includes: (symbol: Symbol) => boolean;
     }
 
     // Holds all state needed for the core algorithm. Unlike `Search`, this doesn't change.
@@ -210,20 +211,14 @@ namespace ts.FindAllReferences {
     }
 
     function getReferencedSymbolsForSymbol(symbol: Symbol, node: Node, sourceFiles: SourceFile[], checker: TypeChecker, cancellationToken: CancellationToken, options: Options): ReferencedSymbol[] {
-        // If we're at an `export { foo }` symbol, don't start the search with the exported symbol, search with the local symbol.
-        if (parentIsShorthandExportSpecifier(node)) {
-            symbol = checker.getShallowTargetOfExportSpecifier(symbol);
-        }
-
-        //Build the set of symbols to search for, initially it has only the current symbol
-        const searchSymbols = populateSearchSymbolSet(symbol, node, checker, options.implementations);
+        symbol = skipPastExportImportSpecifier(symbol, node, checker);
 
         // Compute the meaning from the location and the symbol it references
         const searchMeaning = getIntersectingMeaningFromDeclarations(getMeaningFromLocation(node), symbol.declarations);
 
         const result: ReferencedSymbol[] = [];
         const state = createState(sourceFiles, node, checker, cancellationToken, searchMeaning, options, result);
-        const search = state.createSearch(node, symbol, searchSymbols);
+        const search = state.createSearch(node, symbol, populateSearchSymbolSet(symbol, node, checker, options.implementations));
 
         // Try to get the smallest valid scope that we can limit our search to;
         // otherwise we'll need to search globally (i.e. include each file).
@@ -238,26 +233,69 @@ namespace ts.FindAllReferences {
         return result;
     }
 
+    /** Handle a few special cases relating to export/import specifiers. */
+    function skipPastExportImportSpecifier(symbol: Symbol, node: Node, checker: TypeChecker): Symbol { //name me
+        const { parent } = node;
+        if (isExportSpecifier(parent)) {//parentIsShorthandExportSpecifier(node)) {
+            if (parent.propertyName) {
+                if (parent.propertyName === node) {
+                    // `export { foo as bar }` and we're at `foo`. Probably intended to find all refs on the original, not just on the import.
+                    return checker.getShallowTargetOfExportSpecifier(symbol); //dup
+                }
+                // Else, we have `export { foo as bar }` and start on `bar`, just find refs for that, not for `foo`.
+                return symbol;
+            } else {
+                // If we're at an `export { foo }` symbol, don't start the search with the exported symbol, search with the local symbol.
+                return checker.getShallowTargetOfExportSpecifier(symbol);
+            }
+        }
+
+        if (isImportSpecifier(parent) && parent.propertyName === node) {
+            // We're at `foo` in `import { foo as bar }`. Probably intended to find all refs on the original, not just on the import.
+            return checker.getImmediateAliasedSymbol(symbol);
+        }
+
+        return symbol;
+    }
+
     function getReferencesGlobally(search: Search, state: State, exportInfo?: ExportInfo) {
         for (const sourceFile of state.sourceFiles) {
             state.cancellationToken.throwIfCancellationRequested();
 
             if (exportInfo !== undefined) {
                 const { localSearches, singleReferences } = getImportSearches(sourceFile, search.symbol, exportInfo, state);
-                if (singleReferences) {
-                    state.addReferences(search, singleReferences);
-                }
+                // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
+                state.addReferences(search, singleReferences);
+
                 for (const search of localSearches) {
+                    // Know we'll find at least one reference
                     getReferencesInContainer(sourceFile, search, state);
                 }
+
+                // This may be accessed as a property of a namespace re-export.
+                //TODO: track all re-exports!
+                switch (exportInfo.kind) {
+                    case ExportKind.Named:
+                        doSearch(search);
+                        break;
+                    case ExportKind.Default:
+                        doSearch({ ...search, text: "default", escapedText: "default" });
+                        break;
+                    case ExportKind.ExportEquals:
+                        // An `export =` export isn't a property of the module, it is the module. So no global search.
+                        break;
+                }
+
+            }
+            else {
+                doSearch(search);
             }
 
-            //Also, it might be available as a named property.
-            //TODO: if a default export, look for '.default'!
-            //NOTE: we might be able to detect this based on whether any 'import *' exists anywhere...
-            getInternedName; //Pretty sure don't need this any more!
-            if (sourceFileHasName(sourceFile, search.escapedText)) {
-                getReferencesInContainer(sourceFile, search, state);
+            //name: searchForName
+            function doSearch(search: Search) {
+                if (sourceFileHasName(sourceFile, search.escapedText)) {
+                    getReferencesInContainer(sourceFile, search, state);
+                }
             }
         }
     }
@@ -312,7 +350,6 @@ namespace ts.FindAllReferences {
         }
 
         forEachImport(importingSourceFile, decl => {
-            //Note:
             if (decl.kind === SyntaxKind.ImportEqualsDeclaration) { //TEST
                 if (exportKind !== ExportKind.ExportEquals) {
                     return;
@@ -330,7 +367,18 @@ namespace ts.FindAllReferences {
                 return;
             }
 
-            const { importClause, moduleSpecifier } = decl;
+            const { moduleSpecifier } = decl;
+            Debug.assert(moduleSpecifier.kind === SyntaxKind.StringLiteral);
+            if (!importsCorrectModule(moduleSpecifier as StringLiteral)) {
+                return;
+            }
+
+            if (decl.kind === SyntaxKind.ExportDeclaration) {
+                searchForNamedImport(decl.exportClause, exportName);
+                return;
+            }
+
+            const { importClause } = decl;
 
             /*if (moduleSpecifier.kind === SyntaxKind.ExternalModuleReference) {
                 const { expression } = moduleSpecifier as ExternalModuleReference;
@@ -341,13 +389,7 @@ namespace ts.FindAllReferences {
                     addSearch(exportLocation, exportSymbol);
                     return;
                 }
-            }*/
-
-            Debug.assert(moduleSpecifier.kind === SyntaxKind.StringLiteral);
-
-            if (!importsCorrectModule(moduleSpecifier as StringLiteral)) {
-                return;
-            }
+            }*///kill
 
             const { namedBindings } = importClause;
             if (namedBindings && namedBindings.kind === ts.SyntaxKind.NamespaceImport) {
@@ -365,48 +407,65 @@ namespace ts.FindAllReferences {
             }
 
             if (exportKind === ExportKind.Named) {
-                if (namedBindings) {
-                    for (const { name, propertyName } of (namedBindings as NamedImports).elements) {
-                        if (propertyName && propertyName.text === exportName) {
-                            //Want to just include the propertyName node as a reference, *not* the renamed element. Important so we don't rename too much.
-                            //Change `import { foo as bar }` to `import { oof as bar }` and leave the rest alone!
-                            if (isForRename) {
-                                singleReferences.push(propertyName); //test that renaming works!!!
-                            }
-                            else {
-                                addSearch(name, checker.getSymbolAtLocation(name)); //dup of below
-                            }
-
-                        }
-                        if (name.text === exportName) {
-                            addSearch(name, checker.getSymbolAtLocation(name));
-                        }
-                    }
-                }
+                searchForNamedImport(namedBindings as NamedImports | undefined, exportName);
             }
             else {
                 //`export =` might be imported by a default import if `--allowSyntheticDefaultExports` is on, so this handles both ExportKind.Default and ExportKind.ExportEquals
                 const { name } = importClause;
-                if (!name) {
-                    return;
-                }
-                const defaultImportAlias = checker.getSymbolAtLocation(name);
-                if (checker.getImmediateAliasedSymbol(defaultImportAlias) === exportSymbol) {
+                if (name) {
+                    const defaultImportAlias = checker.getSymbolAtLocation(name);
+                    Debug.assert(checker.getImmediateAliasedSymbol(defaultImportAlias) === exportSymbol); //kill
                     addSearch(name, defaultImportAlias);
                 }
+                searchForNamedImport(namedBindings as NamedImports | undefined, "default");
             }
         });
 
         return { localSearches: searches, singleReferences };
+
+        function searchForNamedImport(namedBindings: NamedImportsOrExports | undefined, exportName: string): void {
+            if (!namedBindings) {
+                return;
+            }
+
+            for (const { name, propertyName } of namedBindings.elements) {
+                if (propertyName) {
+                    if (propertyName.text === exportName) {
+                        if (isForRename) { //For a rename, don't continue looking past rename imports. In `import { foo as bar }`, don't touch `bar`, just `foo`.
+                            singleReferences.push(propertyName);
+                        }
+                        else {
+                            addSearch(name, checker.getSymbolAtLocation(name));
+                        }
+                    }
+                }
+                else if (name.text === exportName) {
+                    //Already checked that module symbol matches.
+                    addSearch(name, checker.getSymbolAtLocation(name));
+                }
+            }
+        }
     }
 
-    //TODO: handle export-import
-    function forEachImport(sourceFile: SourceFile | ModuleBlock, action: (importDeclaration: ImportDeclaration | ImportEqualsDeclaration) => void) {
-        //for (const importSpecifier of sourceFile.imports) {
-        //    action(importSpecifier);
-        //}
+    function forEachImport(sourceFile: SourceFile, action: (importDeclaration: AnyImportSyntax | ExportDeclaration) => void): void {
+        if (sourceFile.externalModuleIndicator) {
+            for (const moduleSpecifier of sourceFile.imports) {
+                let importDecl = moduleSpecifier.parent;
+                if (importDecl.kind !== SyntaxKind.ImportDeclaration && importDecl.kind !== SyntaxKind.ExportDeclaration) {
+                    Debug.assert(importDecl.kind === SyntaxKind.ExternalModuleReference);
+                    importDecl = importDecl.parent;
+                    Debug.assert(importDecl.kind === SyntaxKind.ImportEqualsDeclaration);
+                }
+                action(importDecl as AnyImportSyntax | ExportDeclaration);
+            }
+        }
+        else {
+            // Declaration file or global script may have module declarations with imports inside of them, so must recurse.
+            forEachImportInNode(sourceFile, action);
+        }
+    }
 
-        //Look for nested imports
+    function forEachImportInNode(sourceFile: SourceFile | ModuleBlock, action: (importDeclaration: AnyImportSyntax | ExportDeclaration) => void): void {
         for (const statement of sourceFile.statements) {
             switch (statement.kind) {
                 case SyntaxKind.ImportDeclaration:
@@ -414,12 +473,21 @@ namespace ts.FindAllReferences {
                     action(statement as ImportDeclaration | ImportEqualsDeclaration);
                     break;
 
+                case SyntaxKind.ExportDeclaration: {
+                    const decl = statement as ExportDeclaration;
+                    if (decl.moduleSpecifier) {
+                        action(decl);
+                    }
+                    break;
+                }
+
                 case SyntaxKind.ModuleDeclaration: {
                     const decl = statement as ModuleDeclaration;
                     //No imports in namespaces, right???
                     if (decl.name.kind === SyntaxKind.StringLiteral) {
-                        forEachImport(decl.body as ModuleBlock, action);
+                        forEachImportInNode(decl.body as ModuleBlock, action);
                     }
+                    break;
                 }
             }
         }
@@ -464,16 +532,6 @@ namespace ts.FindAllReferences {
             return typeOfPattern && checker.getPropertyOfType(typeOfPattern, (<Identifier>bindingElement.name).text);
         }
         return undefined;
-    }
-
-    function getInternedName(symbol: Symbol, location: Node): string { //rename this fn
-        //If this is an export or import specifier it could have been renamed using the 'as' syntax.
-        //If so we want to search for whatever under the cursor.
-        if (isImportOrExportSpecifierName(location)) {
-            return location.text;
-        }
-
-        return stripQuotes(symbol.name);
     }
 
     /**
@@ -779,9 +837,21 @@ namespace ts.FindAllReferences {
 
         // Might be `export { foo }`. In this case, if we are searching for `foo` the symbol won't match, since the symbol at `export { foo }` is an alias to it.`
         if (isExportSpecifier(referenceLocation.parent)) {
-            if (referenceLocation.parent.propertyName && referenceLocation.parent.name === referenceLocation) {
-                // We're at `export { foo as bar }`. Add a reference to `foo` but don't search for `bar`.
-                addReference(referenceLocation, referenceSymbol);
+            if (referenceLocation.parent.propertyName) {
+                // Given `export { foo as bar }`...
+                if (referenceLocation.parent.propertyName === referenceLocation) {
+                    // We're at `foo`.
+                    // skipPastExportImportSpecifier should have skipped past this normally. Shouldn't need to add a reference.
+                } else {
+                    if (search.includes(referenceSymbol)) {
+                        // We're at `bar`. Just add a reference to it and be done.
+                        //TODO: kind of silly to be doing a local search for this since it's not available anywhere but this location.
+                        addReference(referenceLocation, referenceSymbol);
+                        const exportInfo = getExportInfo(referenceSymbol, ExportKind.Named); //TODO: what if it's "as default"?
+                        Debug.assert(!!exportInfo);
+                        getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol), state, exportInfo); //dup code
+                    }
+                }
             }
             else {
                 // Use the local `foo` rather than the exported one.
@@ -812,7 +882,6 @@ namespace ts.FindAllReferences {
 
             const { imported, exported } = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker);
 
-            //TODO: For a rename, *don't* traverse through imports *ever*. Want to rename the most local symbol possible.
             //This requires ability for rename to change `import { x }` to `import { x as y }`.
             //For rename, to not continue if it's a default import b/c we can just rename locally.
             if (imported && !(state.isForRename && imported.isEqualsOrDefault)) {

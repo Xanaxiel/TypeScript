@@ -531,10 +531,21 @@ namespace FourSlash {
                 Harness.IO.log("Unexpected error(s) found.  Error list is:");
             }
 
-            errors.forEach(function (error: ts.Diagnostic) {
-                Harness.IO.log("  minChar: " + error.start +
-                    ", limChar: " + (error.start + error.length) +
-                    ", message: " + ts.flattenDiagnosticMessageText(error.messageText, Harness.IO.newLine()) + "\n");
+            for (const { start, length, messageText } of errors) {
+                Harness.IO.log("  minChar: " + start +
+                    ", limChar: " + (start + length) +
+                    ", message: " + ts.flattenDiagnosticMessageText(messageText, Harness.IO.newLine()) + "\n");
+            }
+        }
+
+        public verifyNoErrors() {
+            ts.forEachKey(this.inputFiles, fileName => {
+                const errors = this.getDiagnostics(fileName);
+                if (errors.length) {
+                    this.printErrorLog(/*expectErrors*/ false, errors);
+                    const error = errors[0]
+                    this.raiseError(`Found an error: ${error.file.fileName}@${error.start}: ${error.messageText}`);
+                }
             });
         }
 
@@ -3537,6 +3548,10 @@ namespace FourSlashInterface {
 
         public currentSignatureHelpIs(expected: string) {
             this.state.verifyCurrentSignatureHelpIs(expected);
+        }
+
+        public noErrors() {
+            this.state.verifyNoErrors();
         }
 
         public numberOfErrorsInCurrentFile(expected: number) {

@@ -10,10 +10,7 @@
 ////import [|{| "isWriteAccess": true, "isDefinition": true |}f|] from "./a";
 ////[|f|]();
 
-goTo.file("/a.ts");
-verify.numberOfErrorsInCurrentFile(0);
-goTo.file("/b.ts");
-verify.numberOfErrorsInCurrentFile(0);
+verify.noErrors();
 
 const [a0, a1, b0, b1] = test.ranges();
 const aRefs = [a0, a1], bRefs = [b0, b1];

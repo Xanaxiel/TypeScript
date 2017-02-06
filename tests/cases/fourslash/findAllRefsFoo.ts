@@ -10,11 +10,11 @@
 ////import { [|{| "isWriteAccess": true, "isDefinition": true |}a|] } from "./a";
 ////[|a|];
 
-verify.numberOfErrorsInCurrentFile(0);
+verify.noErrors();
 
 const [a0, a1, b0, b1] = test.ranges();
 const aRefs = [a0, a1], bRefs = [b0, b1];
 const vars = { definition: "var a: any", ranges: aRefs };
 const imports = { definition: "import a", ranges: bRefs };
-verify.referenceGroups(a0, [vars, imports]);
-//verify.referenceGroups(bRefs, [imports, vars]);
+verify.referenceGroups(aRefs, [vars, imports]);
+verify.referenceGroups(bRefs, [imports, vars]);

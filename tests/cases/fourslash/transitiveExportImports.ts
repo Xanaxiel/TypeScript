@@ -14,4 +14,4 @@
 
 goTo.marker();
 verify.quickInfoExists();
-verify.numberOfErrorsInCurrentFile(0);
+verify.noErrors();

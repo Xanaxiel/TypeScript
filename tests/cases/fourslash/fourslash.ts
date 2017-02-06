@@ -215,6 +215,8 @@ declare namespace FourSlashInterface {
         currentSignatureParameterCountIs(expected: number): void;
         currentSignatureTypeParameterCountIs(expected: number): void;
         currentSignatureHelpIs(expected: string): void;
+        // Checks that there are no compile errors.
+        noErrors(): void;
         numberOfErrorsInCurrentFile(expected: number): void;
         baselineCurrentFileBreakpointLocations(): void;
         baselineCurrentFileNameOrDottedNameSpans(): void;

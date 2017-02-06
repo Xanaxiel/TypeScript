@@ -20,12 +20,7 @@
 //TODO: test more kinds of export-import
 //TODO: this resembles referencesForAmbients, put it near there
 
-//kill
-for (const f of ["/defA.ts", "/defB.ts", "/defC.ts"]) {
-    goTo.file(f);
-    verify.numberOfErrorsInCurrentFile(0);
-}
-
+verify.noErrors();
 
 const ranges = test.ranges();
 const [r0, r1, r2] = ranges;
