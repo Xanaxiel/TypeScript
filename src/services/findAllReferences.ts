@@ -96,6 +96,8 @@ namespace ts.FindAllReferences {
         readonly symbol: Symbol;
         readonly text: string;
         readonly escapedText: string;
+        /** Only set if `options.implementations` is true. These are the symbols checked to get the implementations of a property access. */
+        readonly parents: Symbol[] | undefined;
 
         // Need to make this a property so TypeScript's spread operator allows it
         includes: (symbol: Symbol) => boolean;
@@ -202,7 +204,8 @@ namespace ts.FindAllReferences {
             // Note: if this is an external module symbol, the name doesn't include quotes.
             const text = stripQuotes(getDeclaredName(checker, symbol, location));
             const escapedText = escapeIdentifier(text);
-            return { location, symbol, text, escapedText, includes };
+            const parents = options.implementations && getParentSymbolsOfPropertyAccess(location, symbol, checker);
+            return { location, symbol, text, escapedText, parents, includes };
 
             function includes(referenceSymbol: Symbol): boolean {
                 return allSearchSymbols ? contains(allSearchSymbols, referenceSymbol) : referenceSymbol === symbol;
@@ -653,12 +656,12 @@ namespace ts.FindAllReferences {
         const sourceFile = container.getSourceFile();
         const labelName = targetLabel.text;
         const possiblePositions = getPossibleSymbolReferencePositions(sourceFile, labelName, container.getStart(), container.getEnd(), cancellationToken);
-        forEach(possiblePositions, position => {
+        for (const position of possiblePositions) {
             cancellationToken.throwIfCancellationRequested();
 
             const node = getTouchingWord(sourceFile, position);
             if (!node || node.getWidth() !== labelName.length) {
-                return;
+                continue;
             }
 
             // Only pick labels that are either the target label, or have a target that is the target label
@@ -666,7 +669,7 @@ namespace ts.FindAllReferences {
                 (isJumpStatementTarget(node) && getTargetLabel(node, labelName) === targetLabel)) {
                 references.push(getReferenceEntryFromNode(node));
             }
-        });
+        }
 
         const definition: ReferencedSymbolDefinitionInfo = {
             containerKind: "",
@@ -750,34 +753,9 @@ namespace ts.FindAllReferences {
 
         const start = state.findInComments ? container.getFullStart() : container.getStart();
         const possiblePositions = getPossibleSymbolReferencePositions(sourceFile, search.text, start, container.getEnd(), state.cancellationToken);
-        const parentSymbols = state.implementations ? getParentSymbolsOfPropertyAccess() : undefined; //this is just for 'implementations'
         for (const position of possiblePositions) {
             state.cancellationToken.throwIfCancellationRequested();
-            getReferencesAtLocation(sourceFile, position, search, parentSymbols, state);
-        }
-
-        /* If we are just looking for implementations and this is a property access expression, we need to get the
-         * symbol of the local type of the symbol the property is being accessed on. This is because our search
-         * symbol may have a different parent symbol if the local type's symbol does not declare the property
-         * being accessed (i.e. it is declared in some parent class or interface)
-         */
-        function getParentSymbolsOfPropertyAccess(): Symbol[] | undefined {
-            const propertyAccessExpression = getPropertyAccessExpressionFromRightHandSide(search.location);
-            if (!propertyAccessExpression) {
-                return undefined;
-            }
-
-            const localParentType = state.checker.getTypeAtLocation(propertyAccessExpression.expression);
-            if (!localParentType) {
-                return undefined;
-            }
-
-            if (localParentType.symbol && localParentType.symbol.flags & (SymbolFlags.Class | SymbolFlags.Interface) && localParentType.symbol !== search.symbol.parent) {
-                return [localParentType.symbol];
-            }
-            else if (localParentType.flags & TypeFlags.UnionOrIntersection) {
-                return getSymbolsForClassAndInterfaceComponents(<UnionOrIntersectionType>localParentType);
-            }
+            getReferencesAtLocation(sourceFile, position, search, state);
         }
     }
 
@@ -808,7 +786,7 @@ namespace ts.FindAllReferences {
         return isExternalModuleSymbol(exportingModuleSymbol) ? { exportingModuleSymbol, kind: exportKind } : undefined;
     }
 
-    function getReferencesAtLocation(sourceFile: SourceFile, position: number, search: Search, parentSymbols: Symbol[], state: State): void {
+    function getReferencesAtLocation(sourceFile: SourceFile, position: number, search: Search, state: State): void {
         const referenceLocation = getTouchingPropertyName(sourceFile, position);
 
         if (!isValidReferencePosition(referenceLocation, search.text)) {
@@ -843,12 +821,14 @@ namespace ts.FindAllReferences {
                     // We're at `foo`.
                     // skipPastExportImportSpecifier should have skipped past this normally. Shouldn't need to add a reference.
                 } else {
+                    Debug.assert(referenceLocation.parent.name === referenceLocation);
                     if (search.includes(referenceSymbol)) {
                         // We're at `bar`. Just add a reference to it and be done.
                         //TODO: kind of silly to be doing a local search for this since it's not available anywhere but this location.
                         addReference(referenceLocation, referenceSymbol);
-                        const exportInfo = getExportInfo(referenceSymbol, ExportKind.Named); //TODO: what if it's "as default"?
-                        Debug.assert(!!exportInfo);
+                        const exportInfo = getExportInfo(referenceSymbol,
+                            (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named);
+                        Debug.assert(!!exportInfo);//neater: just don't have the condition then?
                         getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol), state, exportInfo); //dup code
                     }
                 }
@@ -867,7 +847,7 @@ namespace ts.FindAllReferences {
             return;
         }
 
-        const relatedSymbol = getRelatedSymbol(search, referenceSymbol, referenceLocation, parentSymbols, state);
+        const relatedSymbol = getRelatedSymbol(search, referenceSymbol, referenceLocation, state);
         if (relatedSymbol) {
             if (state.isForConstructor) {
                 if (isNewExpressionTarget(referenceLocation)) {
@@ -948,10 +928,13 @@ namespace ts.FindAllReferences {
     }
 
     function skipExportSpecifierSymbol(symbol: Symbol, checker: TypeChecker): Symbol {
-        if (symbol.declarations.some(isExportSpecifier)) {
+        if (symbol.declarations.some(isShallowExportSpecifier)) {
             return checker.getShallowTargetOfExportSpecifier(symbol); //move these calls to one place
         }
         return symbol;
+    }
+    function isShallowExportSpecifier(node: Node) {
+        return node.kind === SyntaxKind.ExportSpecifier && !(node as ExportSpecifier).propertyName;
     }
 
     //!
@@ -986,8 +969,8 @@ namespace ts.FindAllReferences {
         let exported: IExported | undefined;
         const { parent } = node;
 
-        function exportInfo(symbol: Symbol, kind?: ExportKind): IExported {
-            const info = getExportInfo(symbol, kind !== undefined ? kind : getExportKindForNode(parent));
+        function exportInfo(symbol: Symbol, kind: ExportKind): IExported {
+            const info = getExportInfo(symbol, kind);
             return info && { symbol, info }
         }
 
@@ -1005,12 +988,15 @@ namespace ts.FindAllReferences {
                         //test
                         const { exportSymbol } = symbol;
                         Debug.assert(!!exportSymbol);
-                        exported = exportInfo(exportSymbol);
+                        exported = exportInfo(exportSymbol, getExportKindForNode(parent));
                         break;
                 }
             }
-        } else if (hasModifier(getExportNodeFromNodeNodeNode(parent), ModifierFlags.Export)) {
-            exported = exportInfo(symbol);
+        } else {
+            const x = getExportNodeFromNodeNodeNode(parent); //name
+            if (hasModifier(x, ModifierFlags.Export)) {
+                exported = exportInfo(symbol, getExportKindForNode(x));
+            }
         }
 
         const isImport = nodeIsImport(node);
@@ -1622,7 +1608,7 @@ namespace ts.FindAllReferences {
         }
     }
 
-    function getRelatedSymbol(search: Search, referenceSymbol: Symbol, referenceLocation: Node, parents: Symbol[] | undefined, state: State): Symbol | undefined {
+    function getRelatedSymbol(search: Search, referenceSymbol: Symbol, referenceLocation: Node, state: State): Symbol | undefined {
         if (search.includes(referenceSymbol)) {
             return referenceSymbol;
         }
@@ -1670,7 +1656,7 @@ namespace ts.FindAllReferences {
             // parent symbol
             if (rootSymbol.parent && rootSymbol.parent.flags & (SymbolFlags.Class | SymbolFlags.Interface)) {
                 // Parents will only be defined if implementations is true
-                if (parents && !some(parents, parent => explicitlyInheritsFrom(rootSymbol.parent, parent, state.inheritsFromCache, state.checker))) {
+                if (search.parents && !some(search.parents, parent => explicitlyInheritsFrom(rootSymbol.parent, parent, state.inheritsFromCache, state.checker))) {
                     return undefined;
                 }
 
@@ -1910,6 +1896,7 @@ namespace ts.FindAllReferences {
     }
 
     const enum ExportKind { Named, Default, ExportEquals }
+    //Not meant for use with export specifiers.
     function getExportKindForNode(node: Node): ExportKind | undefined {
         if (hasModifier(node, ModifierFlags.Default)) {
              return ExportKind.Default;
@@ -1922,5 +1909,30 @@ namespace ts.FindAllReferences {
 
     function skipAliases(symbol: Symbol, checker: TypeChecker): Symbol {
         return symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+    }
+
+    /**
+     * If we are just looking for implementations and this is a property access expression, we need to get the
+     * symbol of the local type of the symbol the property is being accessed on. This is because our search
+     * symbol may have a different parent symbol if the local type's symbol does not declare the property
+     * being accessed (i.e. it is declared in some parent class or interface)
+     */
+    function getParentSymbolsOfPropertyAccess(location: Node, symbol: Symbol, checker: TypeChecker): Symbol[] | undefined {
+        const propertyAccessExpression = getPropertyAccessExpressionFromRightHandSide(location);
+        if (!propertyAccessExpression) {
+            return undefined;
+        }
+
+        const localParentType = checker.getTypeAtLocation(propertyAccessExpression.expression);
+        if (!localParentType) {
+            return undefined;
+        }
+
+        if (localParentType.symbol && localParentType.symbol.flags & (SymbolFlags.Class | SymbolFlags.Interface) && localParentType.symbol !== symbol.parent) {
+            return [localParentType.symbol];
+        }
+        else if (localParentType.flags & TypeFlags.UnionOrIntersection) {
+            return getSymbolsForClassAndInterfaceComponents(<UnionOrIntersectionType>localParentType);
+        }
     }
 }
