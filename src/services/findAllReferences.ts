@@ -140,7 +140,7 @@ namespace ts.FindAllReferences {
         const isForConstructor = originalLocation.kind === SyntaxKind.ConstructorKeyword;
 
         return { sourceFiles, isForConstructor, checker, cancellationToken, searchMeaning, inheritsFromCache, ...options,
-            markSearched, markSeenContainingTypeReference, addStringOrCommentReference, getReferencePusher, addReferences, createSearch };
+            markSearched, markSeenContainingTypeReference, addStringOrCommentReference, getReferencePusher, addReference, addReferences, createSearch };
 
         function markSearched(sourceFile: SourceFile, symbol: Symbol): boolean {
             const sourceId = getNodeId(sourceFile);
@@ -169,33 +169,32 @@ namespace ts.FindAllReferences {
             });
         }
 
-        function getReferencePusher(referenceSymbol: Symbol, referenceLocation: Node): (node: Node) => void {
-            const refs = getReferencedSymbol(referenceSymbol, referenceLocation).references;
+        function getReferencePusher(referenceSymbol: Symbol, searchLocation: Node): (node: Node) => void {
+            const refs = getReferencedSymbol(referenceSymbol, searchLocation).references;
             return node => refs.push(getReferenceEntryFromNode(node));
         }
 
-        function getReferencedSymbol(symbol: Symbol, searchLocation: Node): ReferencedSymbol {
-            const symbolId = getSymbolId(symbol);
+        function getReferencedSymbol(referenceSymbol: Symbol, searchLocation: Node): ReferencedSymbol {
+            const symbolId = getSymbolId(referenceSymbol);
             let index = symbolToIndex[symbolId];
             if (index !== undefined) {
                 return result[index];
             }
 
             const ref: ReferencedSymbol = {
-                definition: getDefinition(symbol, searchLocation, checker),
+                definition: getDefinition(referenceSymbol, searchLocation, checker),
                 references: []
             };
             symbolToIndex[symbolId] = result.length;
             result.push(ref);
             return ref;
-
         }
 
         function addReferences(search: Search, references: Node[]): void {
             if (references.length) {
-                const addReference = getReferencePusher(search.symbol, search.location);
+                const addRef = getReferencePusher(search.symbol, search.location);
                 for (const ref of references) {
-                    addReference(ref);
+                    addRef(ref);
                 }
             }
         }
@@ -266,11 +265,11 @@ namespace ts.FindAllReferences {
             state.cancellationToken.throwIfCancellationRequested();
 
             if (exportInfo !== undefined) {
-                const { localSearches, singleReferences } = getImportSearches(sourceFile, search.symbol, exportInfo, state);
+                const { importSearches, singleReferences } = getImportSearches(sourceFile, search.symbol, exportInfo, state);
                 // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
                 state.addReferences(search, singleReferences);
 
-                for (const search of localSearches) {
+                for (const search of importSearches) {
                     // Know we'll find at least one reference
                     getReferencesInContainer(sourceFile, search, state);
                 }
@@ -279,23 +278,21 @@ namespace ts.FindAllReferences {
                 //TODO: track all re-exports!
                 switch (exportInfo.kind) {
                     case ExportKind.Named:
-                        doSearch(search);
+                        searchForName(search);
                         break;
                     case ExportKind.Default:
-                        doSearch({ ...search, text: "default", escapedText: "default" });
+                        searchForName({ ...search, text: "default", escapedText: "default" });
                         break;
                     case ExportKind.ExportEquals:
                         // An `export =` export isn't a property of the module, it is the module. So no global search.
                         break;
                 }
-
             }
             else {
-                doSearch(search);
+                searchForName(search);
             }
 
-            //name: searchForName
-            function doSearch(search: Search) {
+            function searchForName(search: Search): void {
                 if (sourceFileHasName(sourceFile, search.escapedText)) {
                     getReferencesInContainer(sourceFile, search, state);
                 }
@@ -338,10 +335,7 @@ namespace ts.FindAllReferences {
         return getNameTable(sourceFile).get(escapedName) !== undefined;
     }
 
-    //TODO: may be imported more than once, so return multiple results!!! TEST
-    //TODO: decided I don't need moduleReExports...
-    //REMEMBER: 'export =' might be imported by a default or namespace import!!!!!!!!!!!!!!!! TEST
-    function getImportSearches(importingSourceFile: SourceFile, exportSymbol: Symbol,{ exportingModuleSymbol, kind: exportKind }: ExportInfo, { createSearch, checker, isForRename }: State): { localSearches: Search[], singleReferences: Node[] } {
+    function getImportSearches(importingSourceFile: SourceFile, exportSymbol: Symbol,{ exportingModuleSymbol, kind: exportKind }: ExportInfo, { createSearch, checker, isForRename }: State): { importSearches: Search[], singleReferences: Node[] } {
         const exportName = exportSymbol.name;
 
         const searches: Search[] = [];
@@ -353,19 +347,13 @@ namespace ts.FindAllReferences {
         }
 
         forEachImport(importingSourceFile, decl => {
-            if (decl.kind === SyntaxKind.ImportEqualsDeclaration) { //TEST
-                if (exportKind !== ExportKind.ExportEquals) {
-                    return;
-                }
-
-                const { moduleReference } = decl;
-                if (moduleReference.kind === SyntaxKind.ExternalModuleReference &&
+            if (decl.kind === SyntaxKind.ImportEqualsDeclaration) {
+                const { name, moduleReference } = decl;
+                if (exportKind === ExportKind.ExportEquals &&
+                    moduleReference.kind === SyntaxKind.ExternalModuleReference &&
                     moduleReference.expression.kind === SyntaxKind.StringLiteral &&
                     importsCorrectModule(moduleReference.expression as StringLiteral)) {
-                    //`import x = require("./x")`.
-                    //Search for the local `x`.
-                    const location = decl.name;
-                    addSearch(location, checker.getSymbolAtLocation(location));
+                    addSearch(name, checker.getSymbolAtLocation(name));
                 }
                 return;
             }
@@ -382,17 +370,6 @@ namespace ts.FindAllReferences {
             }
 
             const { importClause } = decl;
-
-            /*if (moduleSpecifier.kind === SyntaxKind.ExternalModuleReference) {
-                const { expression } = moduleSpecifier as ExternalModuleReference;
-                if (expression.kind === SyntaxKind.StringLiteral && checker.getSymbolAtLocation(expression) === exportingModuleSymbol) {
-                    // `import x = require("./x")`, so use the original symbol and search for its appearance as a property.
-                    //TODO: but if `export =` a function, this is an alias instead!!!
-                    //So don't have `isDefault`, have `enum ExportKind { Default, ExportEquals, Named }`
-                    addSearch(exportLocation, exportSymbol);
-                    return;
-                }
-            }*///kill
 
             const { namedBindings } = importClause;
             if (namedBindings && namedBindings.kind === ts.SyntaxKind.NamespaceImport) {
@@ -424,7 +401,7 @@ namespace ts.FindAllReferences {
             }
         });
 
-        return { localSearches: searches, singleReferences };
+        return { importSearches: searches, singleReferences };
 
         function searchForNamedImport(namedBindings: NamedImportsOrExports | undefined, exportName: string): void {
             if (!namedBindings) {
@@ -813,95 +790,98 @@ namespace ts.FindAllReferences {
             return;
         }
 
-        // Might be `export { foo }`. In this case, if we are searching for `foo` the symbol won't match, since the symbol at `export { foo }` is an alias to it.`
         if (isExportSpecifier(referenceLocation.parent)) {
-            if (referenceLocation.parent.propertyName) {
-                // Given `export { foo as bar }`...
-                if (referenceLocation.parent.propertyName === referenceLocation) {
-                    // We're at `foo`.
-                    // skipPastExportImportSpecifier should have skipped past this normally. Shouldn't need to add a reference.
-                } else {
-                    Debug.assert(referenceLocation.parent.name === referenceLocation);
-                    if (search.includes(referenceSymbol)) {
-                        // We're at `bar`. Just add a reference to it and be done.
-                        //TODO: kind of silly to be doing a local search for this since it's not available anywhere but this location.
-                        addReference(referenceLocation, referenceSymbol);
-                        const exportInfo = getExportInfo(referenceSymbol,
-                            (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named);
-                        Debug.assert(!!exportInfo);//neater: just don't have the condition then?
-                        getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol), state, exportInfo); //dup code
-                    }
-                }
-            }
-            else {
-                // Use the local `foo` rather than the exported one.
-                const aliased = state.checker.getShallowTargetOfExportSpecifier(referenceSymbol);
-                if (search.includes(aliased)) {
-                    addReference(referenceLocation, aliased);
-                    const exportInfo = getExportInfo(referenceSymbol, ExportKind.Named);
-                    Debug.assert(!!exportInfo);
-                    getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol), state, exportInfo);
-                }
-            }
-
+            getReferencesAtExportSpecifier(referenceLocation, referenceSymbol, referenceLocation.parent, search, state);
             return;
         }
 
         const relatedSymbol = getRelatedSymbol(search, referenceSymbol, referenceLocation, state);
-        if (relatedSymbol) {
-            if (state.isForConstructor) {
-                if (isNewExpressionTarget(referenceLocation)) {
-                    addReference(referenceLocation, relatedSymbol);
-                }
-
-                findAdditionalConstructorReferences(referenceSymbol, referenceLocation, sourceFile, search, state);
+        if (!relatedSymbol) {
+            if (referenceLocation.kind === SyntaxKind.ShorthandPropertyAssignment) {
+                getReferenceForShorthandProperty(referenceSymbol, search, state);
             }
-            else {
-                addReference(referenceLocation, relatedSymbol);
-            }
-
-            const { imported, exported } = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker);
-
-            //This requires ability for rename to change `import { x }` to `import { x as y }`.
-            //For rename, to not continue if it's a default import b/c we can just rename locally.
-            if (imported && !(state.isForRename && imported.isEqualsOrDefault)) {
-                const importLocation = imported.symbol.declarations[0];
-                const searchFile = importLocation.getSourceFile(); //go to the symbol we imported from and find references for it.
-                //This is in the source file of the import, so it will lead to finding export references.
-                //TODO: could this just call findAllRefsGloballyOrExported?????
-                getReferencesInContainer(searchFile, state.createSearch(importLocation, imported.symbol), state);
-                //Problem w/ below: we exclude the exporting module from being considered in `findAllRefsGloballyOrExported`. So must search in itself first.
-                //findAllRefsGloballyOrExported(state.createSearch(imported.location, imported.symbol), state, getExportKindForSymbol(imported.symbol));
-            }
-            if (exported !== undefined) {
-                //Still look through exports for a rename, because those will be affected too!
-                getReferencesGlobally(state.createSearch(referenceLocation, exported.symbol), state, exported.info);
-            }
-
             return;
         }
 
+        if (state.isForConstructor) {
+            if (isNewExpressionTarget(referenceLocation)) {
+                addReference(referenceLocation, relatedSymbol, search, state);
+            }
+
+            findAdditionalConstructorReferences(relatedSymbol, referenceLocation, sourceFile, search, state);
+        }
+        else {
+            addReference(referenceLocation, relatedSymbol, search, state);
+        }
+
+        // May recursively search in other modules if this is an import/export.
+
+        const { imported, exported } = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker);
+
+        if (imported && !(state.isForRename && imported.isEqualsOrDefault)) {
+            const importLocation = imported.symbol.declarations[0];
+            // Go to the symbol we imported from and find references for it.
+            getReferencesInContainer(importLocation.getSourceFile(), state.createSearch(importLocation, imported.symbol), state);
+        }
+
+        if (exported !== undefined) {
+            //Still look through exports for a rename, because those will be affected too!
+            getReferencesGlobally(state.createSearch(referenceLocation, exported.symbol), state, exported.info);
+        }
+    }
+
+    function getReferencesAtExportSpecifier(referenceLocation: Node, referenceSymbol: Symbol, exportSpecifier: ExportSpecifier, search: Search, state: State): void {
+        if (exportSpecifier.propertyName) {
+            // Given `export { foo as bar }`...
+            if (exportSpecifier.propertyName === referenceLocation) {
+                // We're at `foo`.
+                // skipPastExportImportSpecifier should have skipped past this normally. Shouldn't need to add a reference.
+            } else {
+                Debug.assert(exportSpecifier.name === referenceLocation);
+                f(referenceSymbol);
+            }
+        }
+        else {
+            Debug.assert(exportSpecifier.name === referenceLocation);
+            // Use the local `foo` rather than the exported one for comparison and for adding the reference.
+            const aliased = state.checker.getShallowTargetOfExportSpecifier(referenceSymbol);
+            f(aliased);
+        }
+
+        function f(aliased: Symbol) { //name
+            if (search.includes(aliased)) {
+                addReference(referenceLocation, aliased, search, state);
+                const exportInfo = getExportInfo(referenceSymbol,
+                    (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named);
+                Debug.assert(!!exportInfo);
+                getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol), state, exportInfo);
+            }
+        }
+    }
+
+    //neater
+    function getReferenceForShorthandProperty(referenceSymbol: Symbol, search: Search, state: State): void {
         const referenceSymbolDeclaration = referenceSymbol.valueDeclaration;
         const shorthandValueSymbol = state.checker.getShorthandAssignmentValueSymbol(referenceSymbolDeclaration);
-        /* Because in short-hand property assignment, an identifier which stored as name of the short-hand property assignment
-            * has two meanings: property name and property value. Therefore when we do findAllReference at the position where
-            * an identifier is declared, the language service should return the position of the variable declaration as well as
-            * the position in short-hand property assignment excluding property accessing. However, if we do findAllReference at the
-            * position of property accessing, the referenceEntry of such position will be handled in the first case.
-            */
+        /*
+         * Because in short-hand property assignment, an identifier which stored as name of the short-hand property assignment
+         * has two meanings: property name and property value. Therefore when we do findAllReference at the position where
+         * an identifier is declared, the language service should return the position of the variable declaration as well as
+         * the position in short-hand property assignment excluding property accessing. However, if we do findAllReference at the
+         * position of property accessing, the referenceEntry of such position will be handled in the first case.
+         */
         if (!(referenceSymbol.flags & SymbolFlags.Transient) && search.includes(shorthandValueSymbol)) {
-            addReference(referenceSymbolDeclaration.name, shorthandValueSymbol);
+            addReference(referenceSymbolDeclaration.name, shorthandValueSymbol, search, state);
         }
-        return;
+    }
 
-        function addReference(node: Node, relatedSymbol: Symbol) {
-            const addRef = state.getReferencePusher(relatedSymbol, search.location);
-            if (state.implementations) {
-                addImplementationReferences(node, addRef, state);
-            }
-            else {
-                addRef(node);
-            }
+    function addReference(node: Node, relatedSymbol: Symbol, search: Search, state: State): void {
+        const addRef = state.getReferencePusher(relatedSymbol, search.location);
+        if (state.implementations) {
+            addImplementationReferences(node, addRef, state);
+        }
+        else {
+            addRef(node);
         }
     }
 
