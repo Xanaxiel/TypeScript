@@ -2400,7 +2400,9 @@
 
         getConstantValue(node: EnumMember | PropertyAccessExpression | ElementAccessExpression): number;
         isValidPropertyAccess(node: PropertyAccessExpression | QualifiedName, propertyName: string): boolean;
-        getAliasedSymbol(symbol: Symbol): Symbol; //doc
+        /** Follow all aliases to get the original symbol. */
+        getAliasedSymbol(symbol: Symbol): Symbol;
+        /** Follow a *single* alias to get the immediately aliased symbol. */
         /* @internal */ getImmediateAliasedSymbol(symbol: Symbol): Symbol; //doc
         //KLUDGE
         getShallowTargetOfExportSpecifier(symbol: Symbol): Symbol; //Is this just getExportSpecifierLocalTargetSymbol?????
