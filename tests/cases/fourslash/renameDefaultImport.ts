@@ -12,10 +12,11 @@
 ////b.test();
 
 goTo.marker("1");
-verify.occurrencesAtPositionCount(1);
+//verify.occurrencesAtPositionCount(1); //TODO:BETTER
 
 const ranges = test.ranges();
 const [C, B0, B1] = ranges;
+
 const classes = { definition: "class B", ranges: [C] };
 const imports = { definition: "import B", ranges: [B0, B1] };
 verify.referenceGroups(C, [classes, imports]);
@@ -27,9 +28,4 @@ verify.referenceGroups(B1, [
 
 goTo.rangeStart(C);
 verify.renameLocations(false, false, ranges);
-
-const rangesInB = [B0, B1];
-for (const r of rangesInB) {
-    goTo.rangeStart(r);
-    verify.renameLocations(false, false, [B0, B1]);
-}
+verify.rangesAreRenameLocations(false, false, [B0, B1]);

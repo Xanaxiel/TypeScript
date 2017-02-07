@@ -1,30 +1,36 @@
 /// <reference path='fourslash.ts' />
 // @noLib: true
 
-////declare namespace N {
+////declare namespace [|{| "isWriteAccess": true, "isDefinition": true |}N|] {
 ////    export var x: number;
 ////}
 ////declare module "mod" {
-////    export = N;
+////    export = [|N|];
 ////}
-////declare module "test" {
+////declare module "a" {
 ////    import * as [|{| "isWriteAccess": true, "isDefinition": true |}N|] from "mod";
 ////    export { [|{| "isWriteAccess": true, "isDefinition": true |}N|] }; // Renaming N here would rename
 ////}
-////declare module "test2" {
-////    import { [|{| "isWriteAccess": true, "isDefinition": true |}N|] } from "test";
+////declare module "b" {
+////    import { [|{| "isWriteAccess": true, "isDefinition": true |}N|] } from "a";
 ////    export const y: typeof [|N|].x;
 ////}
 
 //TODO: version of this test where `import { N }` -> `import { N as M }`
 
-verify.rangesAreRenameLocations();
-
 const ranges = test.ranges();
-const [r0, r1, r2, r3] = ranges;
-const test1 = [r0, r1];
-const test2 = [r2, r3];
-const group1 = { definition: "import N", ranges: test1 };
-const group2 = { definition: "import N", ranges: test2 };
-verify.referenceGroups(test1, [group1, group2]);
-verify.referenceGroups(test2, [group2, group1]);
+const [N0, N1, a0, a1, b0, b1] = ranges;
+const nRanges = [N0, N1];
+const aRanges = [a0, a1];
+const bRanges = [b0, b1];
+
+const nGroup = { definition: "namespace N", ranges: nRanges };
+const aGroup = { definition: "import N", ranges: aRanges };
+const bGroup = { definition: "import N", ranges: [b0, b1] };
+
+verify.referenceGroups(nRanges, [nGroup]);
+verify.referenceGroups([a0, a1], [aGroup, nGroup, bGroup]);
+verify.referenceGroups(bRanges, [bGroup, aGroup, nGroup]);
+
+verify.rangesAreRenameLocations(false, false, nRanges);
+verify.rangesAreRenameLocations(false, false, aRanges.concat(bRanges));

@@ -37,7 +37,7 @@ verify.referenceGroups([a1, a2], [
     { definition: "import a", ranges: cRanges }
 ]);
 
-verify.referenceGroups([b0, b2], [
+verify.referenceGroups([b0, b0], [
     { definition: "import b", ranges: bRanges }
 ]);
 verify.referenceGroups(b1, [

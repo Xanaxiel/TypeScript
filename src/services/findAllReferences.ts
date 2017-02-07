@@ -269,9 +269,8 @@ namespace ts.FindAllReferences {
                 // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
                 state.addReferences(search, singleReferences);
 
-                for (const search of importSearches) {
-                    // Know we'll find at least one reference
-                    getReferencesInContainer(sourceFile, search, state);
+                for (const importSearch of importSearches) {
+                    getReferencesInContainer(sourceFile, importSearch, state);
                 }
 
                 // This may be accessed as a property of a namespace re-export.
@@ -353,7 +352,10 @@ namespace ts.FindAllReferences {
                     moduleReference.kind === SyntaxKind.ExternalModuleReference &&
                     moduleReference.expression.kind === SyntaxKind.StringLiteral &&
                     importsCorrectModule(moduleReference.expression as StringLiteral)) {
-                    addSearch(name, checker.getSymbolAtLocation(name));
+
+                    if (!isForRename || decl.name.text === exportSymbol.name) {
+                        addSearch(name, checker.getSymbolAtLocation(name));
+                    }
                 }
                 return;
             }
@@ -365,7 +367,7 @@ namespace ts.FindAllReferences {
             }
 
             if (decl.kind === SyntaxKind.ExportDeclaration) {
-                searchForNamedImport(decl.exportClause, exportName);
+                searchForNamedImport(decl.exportClause);
                 return;
             }
 
@@ -386,23 +388,27 @@ namespace ts.FindAllReferences {
             }
 
             if (exportKind === ExportKind.Named) {
-                searchForNamedImport(namedBindings as NamedImports | undefined, exportName);
+                searchForNamedImport(namedBindings as NamedImports | undefined);
             }
             else {
                 //`export =` might be imported by a default import if `--allowSyntheticDefaultExports` is on, so this handles both ExportKind.Default and ExportKind.ExportEquals
                 const { name } = importClause;
-                if (name) {
+                if (name && (!isForRename || name.text === symbolName(exportSymbol))) {
                     const defaultImportAlias = checker.getSymbolAtLocation(name);
                     Debug.assert(checker.getImmediateAliasedSymbol(defaultImportAlias) === exportSymbol); //kill
                     addSearch(name, defaultImportAlias);
                 }
-                searchForNamedImport(namedBindings as NamedImports | undefined, "default");
+
+                if (!isForRename) {
+                    Debug.assert(exportName === "default");
+                    searchForNamedImport(namedBindings as NamedImports | undefined);
+                }
             }
         });
 
         return { importSearches: searches, singleReferences };
 
-        function searchForNamedImport(namedBindings: NamedImportsOrExports | undefined, exportName: string): void {
+        function searchForNamedImport(namedBindings: NamedImportsOrExports | undefined): void {
             if (!namedBindings) {
                 return;
             }
@@ -796,9 +802,7 @@ namespace ts.FindAllReferences {
 
         const relatedSymbol = getRelatedSymbol(search, referenceSymbol, referenceLocation, state);
         if (!relatedSymbol) {
-            if (referenceLocation.kind === SyntaxKind.ShorthandPropertyAssignment) {
-                getReferenceForShorthandProperty(referenceSymbol, search, state);
-            }
+            getReferenceForShorthandProperty(referenceSymbol, search, state);
             return;
         }
 
@@ -1884,6 +1888,7 @@ namespace ts.FindAllReferences {
 
     //NEW HELPERS BELOW
 
+    //This handles default exports. TODO: assert that it returns a result
     function symbolName(symbol: Symbol): string {
         const { name } = symbol;
         if (name !== "default") {
