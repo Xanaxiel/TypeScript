@@ -280,7 +280,10 @@ namespace ts.FindAllReferences {
                         searchForName(search);
                         break;
                     case ExportKind.Default:
-                        searchForName({ ...search, text: "default", escapedText: "default" });
+                        //We can't rename an access to '.default', of course!
+                        if (!state.isForRename) {
+                            searchForName({ ...search, text: "default", escapedText: "default" });
+                        }
                         break;
                     case ExportKind.ExportEquals:
                         // An `export =` export isn't a property of the module, it is the module. So no global search.
