@@ -335,7 +335,7 @@ namespace ts.FindAllReferences {
         return getNameTable(sourceFile).get(escapedName) !== undefined;
     }
 
-    function getImportSearches(importingSourceFile: SourceFile, exportSymbol: Symbol,{ exportingModuleSymbol, kind: exportKind }: ExportInfo, { createSearch, checker, isForRename }: State): { importSearches: Search[], singleReferences: Node[] } {
+    function getImportSearches(importingSourceFile: SourceFile, exportSymbol: Symbol, { exportingModuleSymbol, kind: exportKind }: ExportInfo, { createSearch, checker, isForRename }: State): { importSearches: Search[], singleReferences: Node[] } {
         const exportName = exportSymbol.name;
 
         const searches: Search[] = [];
@@ -375,10 +375,9 @@ namespace ts.FindAllReferences {
             if (namedBindings && namedBindings.kind === ts.SyntaxKind.NamespaceImport) {
                 //`import * as x from "./x"
                 //Text search will catch this (must use the name)
-                //TODO: remember to test for '.default'...
-
                 //An `export =` may be imported by a namespace import. (TODO: TEST!)
                 if (exportKind === ExportKind.ExportEquals) {
+                    //Don't need to check for match with exportSymbol since we've checked the module. (In fact, the imported symbol will be different.)
                     const location = namedBindings.name;
                     addSearch(location, checker.getSymbolAtLocation(location)); //duplicate code
                 }
@@ -960,6 +959,7 @@ namespace ts.FindAllReferences {
                     case SpecialPropertyAssignmentKind.ExportsProperty:
                         return { exported: exportInfo(symbol, ExportKind.Named) };
                     case SpecialPropertyAssignmentKind.ModuleExports:
+                        //TODO:TEST
                         return { exported: exportInfo(symbol, ExportKind.ExportEquals) };
                     case SpecialPropertyAssignmentKind.PrototypeProperty:
                     case SpecialPropertyAssignmentKind.ThisProperty:
@@ -977,6 +977,15 @@ namespace ts.FindAllReferences {
             if (hasModifier(x, ModifierFlags.Export)) {
                 exported = exportInfo(symbol, getExportKindForNode(x));
             }
+            else if (parent.kind === SyntaxKind.ExportAssignment) {
+                //For export-import this would be an ImportEqualsDeclaration???
+                //How to have both???
+                //Not calling getExportInfo because that checks symbol.parent. For `export =` there is no parent.
+
+                //The exporting module is the source file.
+                const exportingModuleSymbol = checker.getSymbolAtLocation(node.getSourceFile());
+                return { exported: { symbol, info: { exportingModuleSymbol, kind: ExportKind.ExportEquals } } }
+            }
         }
 
         const isImport = nodeIsImport(node);
@@ -986,10 +995,19 @@ namespace ts.FindAllReferences {
             if (importedSymbol) {
                 // Want to search on the local symbol in the exporting module, not the exported symbol.
                 importedSymbol = skipExportSpecifierSymbol(importedSymbol, checker);
+                //Similarly, skip past the symbol for 'export ='
+                if (importedSymbol.name === "export=") {
+                    importedSymbol = checker.getImmediateAliasedSymbol(importedSymbol);
+                }
+
                 //TODO: import { default as foo } is a default import!!!!!
                 if (symbolName(importedSymbol) === symbol.name) { //If this is a rename import, do not continue searching.
                     imported = { symbol: importedSymbol, ...isImport };
                 }
+            }
+            else if (isImport.isEqualsOrDefault) {
+                //May import an `export =`
+
             }
         }
 
@@ -1014,6 +1032,9 @@ namespace ts.FindAllReferences {
 
             case SyntaxKind.ImportClause:
                 Debug.assert((parent as ImportClause).name === node);
+                return { isEqualsOrDefault: true };
+
+            case SyntaxKind.NamespaceImport:
                 return { isEqualsOrDefault: true };
 
             default:
@@ -1876,13 +1897,10 @@ namespace ts.FindAllReferences {
     }
 
     const enum ExportKind { Named, Default, ExportEquals }
-    //Not meant for use with export specifiers.
+    //Not meant for use with export specifiers or export assignment.
     function getExportKindForNode(node: Node): ExportKind | undefined {
         if (hasModifier(node, ModifierFlags.Default)) {
              return ExportKind.Default;
-        }
-        if (node.kind === SyntaxKind.ExportAssignment) {
-            return ExportKind.ExportEquals;
         }
         return ExportKind.Named;
     }

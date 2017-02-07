@@ -120,6 +120,7 @@ declare namespace FourSlashInterface {
         marker(name?: string | Marker): void;
         eachMarker(action: () => void): void;
         rangeStart(range: Range): void;
+        eachRange(ranges: Range[], action: () => void): void;
         eachRange(action: () => void): void;
         bof(): void;
         eof(): void;
@@ -198,7 +199,7 @@ declare namespace FourSlashInterface {
         referenceGroups(startRanges: Range | Range[], parts: Array<{ definition: string, ranges: Range[] }>): void;
         singleReferenceGroup(definition: string, ranges?: Range[]): void;
         rangesAreOccurrences(isWriteAccess?: boolean): void;
-        rangesAreRenameLocations(findInStrings?: boolean, findInComments?: boolean): void;
+        rangesAreRenameLocations(findInStrings?: boolean, findInComments?: boolean, ranges?: Range[]): void;
         /**
          * Performs `referencesOf` for every range on the whole set.
          * If `ranges` is omitted, this is `test.ranges()`.

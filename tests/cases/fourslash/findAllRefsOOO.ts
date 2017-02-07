@@ -1,3 +1,5 @@
+/// <reference path="fourslash.ts" />
+
 // @Filename: /a.ts
 ////export function [|{| "isWriteAccess": true, "isDefinition": true |}foo|](): void {}
 

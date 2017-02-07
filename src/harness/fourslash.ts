@@ -396,8 +396,18 @@ namespace FourSlash {
             }
         }
 
-        public goToEachRange(action: () => void) {
-            const ranges = this.getRanges();
+        public goToEachRange(ranges: FourSlash.Range[], action: () => void): void;
+        public goToEachRange(action: () => void): void;
+        public goToEachRange(...args: any[]) {
+            let ranges: Range[];
+            let action: () => void;
+            if (args.length === 1) {
+                action = args[0];
+            }
+            else {
+                [ranges, action] = args;
+            }
+            ranges = ranges || this.getRanges();
             assert(ranges.length);
             for (const range of ranges) {
                 this.goToRangeStart(range);
@@ -2543,8 +2553,8 @@ namespace FourSlash {
             }
         }
 
-        public verifyRangesAreRenameLocations(findInStrings: boolean, findInComments: boolean) {
-            this.goToEachRange(() => this.verifyRenameLocations(findInStrings, findInComments));
+        public verifyRangesAreRenameLocations(findInStrings: boolean, findInComments: boolean, ranges?: Range[]) {
+            this.goToEachRange(ranges, () => this.verifyRenameLocations(findInStrings, findInComments, ranges));
         }
 
         public verifyRangesWithSameTextAreDocumentHighlights() {
@@ -3276,8 +3286,10 @@ namespace FourSlashInterface {
             this.state.goToRangeStart(range);
         }
 
-        public eachRange(action: () => void) {
-            this.state.goToEachRange(action);
+        public eachRange(ranges: FourSlash.Range[], action: () => void): void;
+        public eachRange(action: () => void): void;
+        public eachRange(...args: any[]) {
+            (this.state.goToEachRange as any)(...args);
         }
 
         public bof() {
@@ -3650,8 +3662,8 @@ namespace FourSlashInterface {
             this.state.verifyRangesAreOccurrences(isWriteAccess);
         }
 
-        public rangesAreRenameLocations(findInStrings = false, findInComments = false) {
-            this.state.verifyRangesAreRenameLocations(findInStrings, findInComments);
+        public rangesAreRenameLocations(findInStrings = false, findInComments = false, ranges?: FourSlash.Range[]) {
+            this.state.verifyRangesAreRenameLocations(findInStrings, findInComments, ranges);
         }
 
         public rangesAreDocumentHighlights(ranges?: FourSlash.Range[]) {
