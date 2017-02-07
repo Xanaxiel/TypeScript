@@ -28,9 +28,9 @@ const nGroup = { definition: "namespace N", ranges: nRanges };
 const aGroup = { definition: "import N", ranges: aRanges };
 const bGroup = { definition: "import N", ranges: [b0, b1] };
 
-verify.referenceGroups(nRanges, [nGroup]);
+verify.referenceGroups(nRanges, [nGroup, aGroup, bGroup]);
 verify.referenceGroups([a0, a1], [aGroup, nGroup, bGroup]);
 verify.referenceGroups(bRanges, [bGroup, aGroup, nGroup]);
 
-verify.rangesAreRenameLocations(false, false, nRanges);
+goTo.eachRange(nRanges, () => verify.renameLocations(false, false, ranges));
 verify.rangesAreRenameLocations(false, false, aRanges.concat(bRanges));

@@ -57,6 +57,8 @@ namespace ts.FindAllReferences {
     }
 
     function getReferencedSymbolsForNode(node: Node, sourceFiles: SourceFile[], checker: TypeChecker, cancellationToken: CancellationToken, options: Options = {}): ReferencedSymbol[] | undefined {
+        performance.mark("beforeGetReferencedSymbols");
+
         if (node.kind === ts.SyntaxKind.SourceFile) {
             return undefined;
         }
@@ -87,7 +89,12 @@ namespace ts.FindAllReferences {
             return undefined;
         }
 
-        return getReferencedSymbolsForSymbol(symbol, node, sourceFiles, checker, cancellationToken, options);
+        const res = getReferencedSymbolsForSymbol(symbol, node, sourceFiles, checker, cancellationToken, options);
+
+        performance.mark("afterGetReferencedSymbols");
+        performance.measure("getReferencedSymbols", "beforeGetReferencedSymbols", "afterGetReferencedSymbols");
+
+        return res;
     }
 
     // Node and symbols that are currently being searched for. Unlike `State`, this is different when searching for exports of a symbol vs searching locally.
@@ -264,34 +271,34 @@ namespace ts.FindAllReferences {
         for (const sourceFile of state.sourceFiles) {
             state.cancellationToken.throwIfCancellationRequested();
 
-            if (exportInfo !== undefined) {
-                const { importSearches, singleReferences } = getImportSearches(sourceFile, search.symbol, exportInfo, state);
-                // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
-                state.addReferences(search, singleReferences);
-
-                for (const importSearch of importSearches) {
-                    getReferencesInContainer(sourceFile, importSearch, state);
-                }
-
-                // This may be accessed as a property of a namespace re-export.
-                //TODO: track all re-exports!
-                switch (exportInfo.kind) {
-                    case ExportKind.Named:
-                        searchForName(search);
-                        break;
-                    case ExportKind.Default:
-                        //We can't rename an access to '.default', of course!
-                        if (!state.isForRename) {
-                            searchForName({ ...search, text: "default", escapedText: "default" });
-                        }
-                        break;
-                    case ExportKind.ExportEquals:
-                        // An `export =` export isn't a property of the module, it is the module. So no global search.
-                        break;
-                }
-            }
-            else {
+            if (exportInfo === undefined) {
                 searchForName(search);
+                continue;
+            }
+
+            const { importSearches, singleReferences } = getImportSearches(sourceFile, search.symbol, exportInfo, state);
+            // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
+            state.addReferences(search, singleReferences);
+
+            for (const importSearch of importSearches) {
+                getReferencesInContainer(sourceFile, importSearch, state);
+            }
+
+            // This may be accessed as a property of a namespace re-export.
+            //TODO: track all re-exports!
+            switch (exportInfo.kind) {
+                case ExportKind.Named:
+                    searchForName(search);
+                    break;
+                case ExportKind.Default:
+                    //We can't rename an access to '.default', of course!
+                    if (!state.isForRename) {
+                        searchForName({ ...search, text: "default", escapedText: "default" });
+                    }
+                    break;
+                case ExportKind.ExportEquals:
+                    // An `export =` export isn't a property of the module, it is the module. So no global search.
+                    break;
             }
 
             function searchForName(search: Search): void {
@@ -924,7 +931,7 @@ namespace ts.FindAllReferences {
     }
 
     //!
-    function getExportNodeFromNodeNodeNode(parent: Node) {
+    function getExportNodeFromNodeNodeNode(parent: Node) {//name
         if (parent.kind === SyntaxKind.VariableDeclaration) {
             return getAncestor(parent, SyntaxKind.VariableStatement);
         }
@@ -980,17 +987,14 @@ namespace ts.FindAllReferences {
                 }
             }
         } else {
-            const x = getExportNodeFromNodeNodeNode(parent); //name
+            const x = getExportNodeFromNodeNodeNode(parent);
             if (hasModifier(x, ModifierFlags.Export)) {
                 exported = exportInfo(symbol, getExportKindForNode(x));
             }
             else if (parent.kind === SyntaxKind.ExportAssignment) {
-                //For export-import this would be an ImportEqualsDeclaration???
-                //How to have both???
-                //Not calling getExportInfo because that checks symbol.parent. For `export =` there is no parent.
-
-                //The exporting module is the source file.
-                const exportingModuleSymbol = checker.getSymbolAtLocation(node.getSourceFile());
+                // Get the symbol for the `export =` node; its parent is the module it's the export of.
+                const exportingModuleSymbol = parent.symbol.parent;
+                Debug.assert(!!exportingModuleSymbol);
                 return { exported: { symbol, info: { exportingModuleSymbol, kind: ExportKind.ExportEquals } } }
             }
         }
@@ -1007,20 +1011,16 @@ namespace ts.FindAllReferences {
                     importedSymbol = checker.getImmediateAliasedSymbol(importedSymbol);
                 }
 
-                //TODO: import { default as foo } is a default import!!!!!
                 if (symbolName(importedSymbol) === symbol.name) { //If this is a rename import, do not continue searching.
                     imported = { symbol: importedSymbol, ...isImport };
                 }
-            }
-            else if (isImport.isEqualsOrDefault) {
-                //May import an `export =`
-
             }
         }
 
         return { imported, exported };
     }
 
+    //Looks like we don't need isEqualsOrDefault!
     function nodeIsImport(node: Node): { isEqualsOrDefault: boolean } | undefined {
         const { parent } = node;
         switch (parent.kind) {
@@ -1053,7 +1053,8 @@ namespace ts.FindAllReferences {
         return isRightSideOfPropertyAccess(node) && <PropertyAccessExpression>node.parent;
     }
 
-    /** `classSymbol` is the class where the constructor was defined.
+    /**
+     * `classSymbol` is the class where the constructor was defined.
      * Reference the constructor and all calls to `new this()`.
      */ //also finds declarations. findOwnConstructorCallsAndDeclarations
     function findOwnConstructorCalls(classSymbol: Symbol, sourceFile: SourceFile, addNode: (node: Node) => void): void {

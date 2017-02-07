@@ -1011,6 +1011,15 @@ namespace FourSlash {
             }
         }
 
+        public testTimeFindAllRefs(iterations: number) {
+            for (let i = 0; i < iterations; i++) {
+                this.findReferencesAtCaret();
+            }
+        }
+        public testCleanupSemanticCache() {
+            this.languageService.cleanupSemanticCache();
+        }
+
         public verifyNoReferences(markerNameOrRange?: string | Range) {
             if (markerNameOrRange) {
                 if (typeof markerNameOrRange === "string") {
@@ -3265,6 +3274,13 @@ namespace FourSlashInterface {
 
         public markerByName(s: string): FourSlash.Marker {
             return this.state.getMarkerByName(s);
+        }
+
+        public timeFindAllRefs(iterations: number) {
+            this.state.testTimeFindAllRefs(iterations);
+        }
+        public cleanupSemanticCache() {
+            this.state.testCleanupSemanticCache();
         }
     }
 

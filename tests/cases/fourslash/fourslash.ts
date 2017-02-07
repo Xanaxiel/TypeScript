@@ -115,6 +115,9 @@ declare namespace FourSlashInterface {
         ranges(): Range[];
         rangesByText(): ts.Map<Range[]>;
         markerByName(s: string): Marker;
+
+        timeFindAllRefs(iterations: number): void;
+        cleanupSemanticCache(): void;
     }
     class goTo {
         marker(name?: string | Marker): void;
