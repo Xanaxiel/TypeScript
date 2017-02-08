@@ -57,9 +57,8 @@ namespace ts.FindAllReferences {
 
             //Augmentations of the module can also use its exports without needing an import statement.
             for (const decl of exportingModuleSymbol.declarations) {
-                //Don't need to add the original.
-                if (decl.kind !== SyntaxKind.SourceFile) {
-                    Debug.assert(decl.kind === SyntaxKind.ModuleDeclaration);
+                if (ts.isExternalModuleAugmentation(decl)) {
+                    //Debug.assert(decl.kind === SyntaxKind.ModuleDeclaration); //kill, not needed
                     addIndirectUser(decl as SourceFileLike);
                 }
             }

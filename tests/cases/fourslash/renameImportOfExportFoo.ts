@@ -20,11 +20,10 @@ verify.rangesAreRenameLocations();
 
 const ranges = test.ranges();
 const [r0, r1, r2, r3] = ranges;
-const classRanges = [r0];
-const bRanges = [r1];
 const importRanges = [r2, r3];
-const classes = { definition: "class C", ranges: classRanges };
-const bs = { definition: "import C", ranges: bRanges };
+const classes = { definition: "class C", ranges: [r0] };
+const bs = { definition: "import C", ranges: [r1] };
 const imports = { definition: "import C", ranges: importRanges };
-verify.referenceGroups(classRanges, [classes, bs, imports]);
+verify.referenceGroups(r0, [classes, bs, imports]);
+verify.referenceGroups(r1, [bs, imports, classes]);
 verify.referenceGroups(importRanges, [imports, classes, bs]);

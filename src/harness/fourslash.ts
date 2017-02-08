@@ -2562,6 +2562,10 @@ namespace FourSlash {
             }
         }
 
+        public verifyRangesWithSameTextAreRenameLocations() {
+            this.rangesByText().forEach(ranges => this.verifyRangesAreRenameLocations(false, false, ranges));
+        }
+
         public verifyRangesAreRenameLocations(findInStrings: boolean, findInComments: boolean, ranges?: Range[]) {
             this.goToEachRange(ranges, () => this.verifyRenameLocations(findInStrings, findInComments, ranges));
         }
@@ -3676,6 +3680,10 @@ namespace FourSlashInterface {
 
         public rangesAreOccurrences(isWriteAccess?: boolean) {
             this.state.verifyRangesAreOccurrences(isWriteAccess);
+        }
+
+        public rangesWithSameTextAreRenameLocations() {
+            this.state.verifyRangesWithSameTextAreRenameLocations();
         }
 
         public rangesAreRenameLocations(findInStrings = false, findInComments = false, ranges?: FourSlash.Range[]) {

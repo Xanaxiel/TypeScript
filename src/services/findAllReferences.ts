@@ -266,7 +266,7 @@ namespace ts.FindAllReferences {
             } else {
                 // If we're at an `export { foo }` symbol, don't start the search with the exported symbol, search with the local symbol.
                 //NOTE: we shouldn't do this for `export { foo } from "blah" because then `getShallowTarget`!!!! TEST! See "factor this out"
-                return checker.getShallowTargetOfExportSpecifier(symbol);
+                return getShallowTargetOfExportSpecifierIfNecessary(parent, symbol, checker);
             }
         }
 
@@ -741,16 +741,30 @@ namespace ts.FindAllReferences {
 
         if (importOrExport.kind === ImportExport.Import) {
             if (!(state.isForRename && importOrExport.isEqualsOrDefault)) {
-                const importLocation = symbol.declarations[0];
-                // Go to the symbol we imported from and find references for it.
-                getReferencesInContainer(importLocation.getSourceFile(), state.createSearch(importLocation, symbol, ImportExport.Import), state);
+                searchForImportedSymbol(symbol, state);
             }
         }
         else {
-            //Shouldn't need cast. https://github.com/Microsoft/TypeScript/issues/10564
             //Still look through exports for a rename, because those will be affected too!
-            getReferencesGlobally(state.createSearch(referenceLocation, importOrExport.symbol, ImportExport.Export), state, importOrExport.info);
+            searchForImportsOfExport(referenceLocation, importOrExport.symbol, importOrExport.info, state);
         }
+    }
+
+    // Go to the symbol we imported from and find references for it.
+    function searchForImportedSymbol(symbol: Symbol, state: State) {
+        for (const declaration of symbol.declarations) { //test that we go to multiple declarations
+            getReferencesInContainer(declaration.getSourceFile(), state.createSearch(declaration, symbol, ImportExport.Import), state);
+        }
+    }
+
+    function searchForImportsOfExport(location: Node, symbol: Symbol, info: ExportInfo, state: State) {
+        getReferencesGlobally(state.createSearch(location, symbol, ImportExport.Export), state, info);
+    }
+
+    //name, move
+    function getShallowTargetOfExportSpecifierIfNecessary(exportSpecifier: ExportSpecifier, referenceSymbol: Symbol, checker: TypeChecker): Symbol {
+        const exportDeclaration = exportSpecifier.parent.parent;
+        return exportDeclaration.moduleSpecifier ? referenceSymbol : checker.getShallowTargetOfExportSpecifier(referenceSymbol);
     }
 
     //Note: this recurses for uses of the export. It doesn't need to recurse to uses of the import because we skip past re-exports to the original import anyway.
@@ -758,8 +772,9 @@ namespace ts.FindAllReferences {
         if (exportSpecifier.propertyName) {
             // Given `export { foo as bar }`...
             if (exportSpecifier.propertyName === referenceLocation) {
-                // We're at `foo`.
-                // skipPastExportImportSpecifier should have skipped past this normally. Shouldn't need to add a reference.
+                //We're at `foo`.
+                //skipPastExportImportSpecifier should have skipped past this normally. Shouldn't need to add a reference.
+                //Also, if this is a rename we won't want to look at rhs.
             } else {
                 Debug.assert(exportSpecifier.name === referenceLocation);
                 f(referenceSymbol);
@@ -768,15 +783,15 @@ namespace ts.FindAllReferences {
         else {
             Debug.assert(exportSpecifier.name === referenceLocation);
             // Use the local `foo` rather than the exported one for comparison and for adding the reference.
+            f(getShallowTargetOfExportSpecifierIfNecessary(exportSpecifier, referenceSymbol, state.checker));
+        }
 
-            //factor this out to a function
-            const parent = exportSpecifier.parent;
-            Debug.assert(parent.kind === SyntaxKind.NamedExports);
-            const grandParent = parent.parent;
-            Debug.assert(grandParent.kind == SyntaxKind.ExportDeclaration);
-            const isReExport = !!(grandParent as ExportDeclaration).moduleSpecifier
-            const aliased = isReExport ? referenceSymbol : state.checker.getShallowTargetOfExportSpecifier(referenceSymbol);
-            f(aliased);
+        const exportDeclaration = exportSpecifier.parent.parent;
+        if (search.comingFrom !== ImportExport.Export && exportDeclaration.moduleSpecifier) {
+            if (!exportSpecifier.propertyName) {
+                const importedSymbol = state.checker.getExportSpecifierLocalTargetSymbol(exportSpecifier);
+                searchForImportedSymbol(importedSymbol, state);
+            }
         }
 
         function f(aliased: Symbol) { //name
@@ -786,7 +801,7 @@ namespace ts.FindAllReferences {
                     (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named,
                     state.checker);
                 Debug.assert(!!exportInfo);
-                getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol, ImportExport.Export), state, exportInfo);
+                searchForImportsOfExport(referenceLocation, referenceSymbol, exportInfo, state);
             }
         }
     }

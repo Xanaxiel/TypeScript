@@ -1863,6 +1863,7 @@
     }
 
     export interface NamedExports extends Node {
+        parent: ExportDeclaration;
         kind: SyntaxKind.NamedExports;
         elements: NodeArray<ExportSpecifier>;
     }
@@ -1876,6 +1877,7 @@
     }
 
     export interface ExportSpecifier extends Declaration {
+        parent: NamedExports;
         kind: SyntaxKind.ExportSpecifier;
         propertyName?: Identifier;  // Name preceding "as" keyword (or undefined when "as" is absent)
         name: Identifier;           // Declared name
