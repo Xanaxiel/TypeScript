@@ -1,4 +1,4 @@
-﻿/// <reference path="./moduleReferences.ts" />
+﻿/// <reference path="./importTracker.ts" />
 
 /* @internal */
 namespace ts.FindAllReferences {
@@ -116,7 +116,6 @@ namespace ts.FindAllReferences {
 
     // Holds all state needed for the core algorithm. Unlike `Search`, this doesn't change.
     export interface State extends Options { //don't export
-        //neater
         readonly isForConstructor: boolean;
 
         readonly sourceFiles: SourceFile[];

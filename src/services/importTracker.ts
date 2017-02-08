@@ -1,12 +1,12 @@
-//TODO: rename this file
+/* Code for finding imports of an exported symbol. Used only by FindAllReferences. */
 
 /* @internal */
 namespace ts.FindAllReferences {
-    type ImportLike = AnyImportSyntax | ExportDeclaration;
-    type ImportLike2 = ImportLike | CallExpression;
+    type SourceFileLike = SourceFile | ModuleDeclaration;
+    type Importer = AnyImportSyntax | ExportDeclaration;
+    type ImportLike2 = Importer | CallExpression;
 
     //neater
-    type SourceFileLike = SourceFile | ModuleDeclaration;
     function getModuleDeclaration(node: Node): SourceFileLike {
         //getAncestor
         while (true) {
@@ -23,7 +23,7 @@ namespace ts.FindAllReferences {
     }
 
     //move
-    function getContainingModuleSymbol(direct: ImportLike, checker: TypeChecker): Symbol {
+    function getContainingModuleSymbol(direct: Importer, checker: TypeChecker): Symbol {
         return checker.getMergedSymbol(getModuleDeclaration(direct).symbol);
     }
 
@@ -47,11 +47,11 @@ namespace ts.FindAllReferences {
 
         //Files that directly access the export.
         //Files that may (or may not) access the export through a namespace.
-        function getImporters({ exportingModuleSymbol, exportKind }: ExportInfo, checker: TypeChecker): { directImports: ImportLike[], indirectUsers: SourceFile[] } {
+        function getImporters({ exportingModuleSymbol, exportKind }: ExportInfo, checker: TypeChecker): { directImports: Importer[], indirectUsers: SourceFile[] } {
             const seenDirectImports: Array<true> = [];
             const seenIndirectUsers: Array<true> = [];
             const indirectUsers: SourceFileLike[] = [];
-            const directImports: ImportLike[] = [];
+            const directImports: Importer[] = [];
 
             handleDirectImports(getDirectImports(exportingModuleSymbol));
 
@@ -152,7 +152,7 @@ namespace ts.FindAllReferences {
         }
     }
 
-    function getSearchesFromDirectImports(exportSymbol: Symbol, { exportKind }: ExportInfo, { createSearch, checker, isForRename }: State, directImports: ImportLike[]): { importSearches: Search[], singleReferences: Node[] } {
+    function getSearchesFromDirectImports(exportSymbol: Symbol, { exportKind }: ExportInfo, { createSearch, checker, isForRename }: State, directImports: Importer[]): { importSearches: Search[], singleReferences: Node[] } {
         const exportName = exportSymbol.name;
         const importSearches: Search[] = [];
         let singleReferences: Node[] = [];
@@ -167,7 +167,7 @@ namespace ts.FindAllReferences {
 
         return { importSearches, singleReferences };
 
-        function handleImportLike(decl: ImportLike): void {
+        function handleImportLike(decl: Importer): void {
             if (decl.kind === SyntaxKind.ImportEqualsDeclaration) {
                 const { name, moduleReference } = decl;
                 if (exportKind === ExportKind.ExportEquals &&
@@ -421,22 +421,20 @@ namespace ts.FindAllReferences {
 
     export const enum ImportExport { Import, Export };
 
-    //name
-    interface IImported {
+    export interface ImportedSymbol {
         kind: ImportExport.Import;
         symbol: Symbol;
         isEqualsOrDefault: boolean;
     }
-    export interface IExported {
+    export interface ExportedSymbol {
         kind: ImportExport.Export;
         symbol: Symbol;
         info: ExportInfo;
     }
-    //todo: need export-import tests
-    export function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker, comingFromExport: boolean): IImported | IExported | undefined {
+    export function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker, comingFromExport: boolean): ImportedSymbol | ExportedSymbol | undefined {
         const { parent } = node;
 
-        function exportInfo(symbol: Symbol, kind: ExportKind): IExported {
+        function exportInfo(symbol: Symbol, kind: ExportKind): ExportedSymbol {
             const info = getExportInfo(symbol, kind, checker);
             return info && { kind: ImportExport.Export, symbol, info }
         }
@@ -497,7 +495,6 @@ namespace ts.FindAllReferences {
         return undefined;
     }
 
-    //Looks like we don't need isEqualsOrDefault!
     function nodeIsImport(node: Node): { isEqualsOrDefault: boolean } | undefined {
         const { parent } = node;
         switch (parent.kind) {
@@ -526,8 +523,6 @@ namespace ts.FindAllReferences {
         }
     }
 
-    //move
-    //undefined means: ignore this export
     export function getExportInfo(exportSymbol: Symbol, exportKind: ExportKind, checker: TypeChecker): ExportInfo | undefined {
         const exportingModuleSymbol = checker.getMergedSymbol(exportSymbol.parent); //need to get merged symbol in case there's an augmentation
         //const moduleDecl = getContainingModule(referenceLocation); //Or just symbol.parent....
@@ -557,12 +552,9 @@ namespace ts.FindAllReferences {
         return ExportKind.Named;
     }
     function skipExportSpecifierSymbol(symbol: Symbol, checker: TypeChecker): Symbol {
-        if (symbol.declarations.some(isShallowExportSpecifier)) {
+        if (symbol.declarations.some(node => node.kind === SyntaxKind.ExportSpecifier && !(node as ExportSpecifier).propertyName)) {
             return checker.getShallowTargetOfExportSpecifier(symbol); //move these calls to one place
         }
         return symbol;
-    }
-    function isShallowExportSpecifier(node: Node) {
-        return node.kind === SyntaxKind.ExportSpecifier && !(node as ExportSpecifier).propertyName;
     }
 }
