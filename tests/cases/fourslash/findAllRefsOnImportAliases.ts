@@ -14,11 +14,13 @@
 
 const ranges = test.ranges();
 const [r0, r1, r2, r3] = ranges;
-const classes = { definition: "class Class", ranges: [r0, r3] };
+const classes = { definition: "class Class", ranges: [r0] };
 const imports = { definition: "import Class", ranges: [r1, r2] };
-verify.referenceGroups([r0, r3], [classes, imports]);
-verify.referenceGroups(r1, [imports, classes]);
+const reExports = { definition: "import Class", ranges: [r3] };
+verify.referenceGroups(r0, [classes, imports, reExports]);
+verify.referenceGroups(r1, [imports, classes, reExports]);
 verify.referenceGroups(r2, [
     { definition: "(alias) new Class(): Class\nimport Class", ranges: [r1, r2] },
-    classes
+    classes,
+    reExports
 ]);

@@ -7,7 +7,7 @@
 
 // @Filename: /defB.ts
 ////declare module "b" {
-////    export import {| "isWriteAccess": true, "isDefinition": true |}a = require("a");
+////    export import a = require("a");
 ////    export const x: a.[|T|];
 ////}
 
@@ -21,11 +21,5 @@
 //TODO: this resembles referencesForAmbients, put it near there
 
 verify.noErrors();
+verify.singleReferenceGroup("type T = number");
 
-const ranges = test.ranges();
-const [r0, r1, r2] = ranges;
-//verify.singleReferenceGroup('module "foo"', [moduleFoo0, moduleFoo1]);
-//verify.singleReferenceGroup('module "bar"', [moduleBar0, moduleBar1]);
-//verify.singleReferenceGroup('import foo = require("foo")', [foo0, foo1, foo2]);
-verify.referenceGroups(r0, [{ definition: "type T = number", ranges: [r0, r1, r2] }]);
-//verify.singleReferenceGroup("var f: number", [f0, f1]);

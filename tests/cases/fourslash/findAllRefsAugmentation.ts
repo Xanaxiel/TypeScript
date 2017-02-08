@@ -10,4 +10,8 @@
 ////    export const x: [|T|];
 ////}
 
-verify.singleReferenceGroup("type T = number");
+goTo.file("/a.ts");
+verify.noErrors();
+const [r0, r1] = test.ranges();
+verify.referenceGroups(r0, [{ definition: "type T = number", ranges: [r0, r1] }]);
+//verify.singleReferenceGroup("type T = number");

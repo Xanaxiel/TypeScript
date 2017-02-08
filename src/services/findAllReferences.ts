@@ -261,6 +261,7 @@ namespace ts.FindAllReferences {
                 return symbol;
             } else {
                 // If we're at an `export { foo }` symbol, don't start the search with the exported symbol, search with the local symbol.
+                //NOTE: we shouldn't do this for `export { foo } from "blah" because then `getShallowTarget`!!!! TEST! See "factor this out"
                 return checker.getShallowTargetOfExportSpecifier(symbol);
             }
         }
@@ -756,7 +757,14 @@ namespace ts.FindAllReferences {
         else {
             Debug.assert(exportSpecifier.name === referenceLocation);
             // Use the local `foo` rather than the exported one for comparison and for adding the reference.
-            const aliased = state.checker.getShallowTargetOfExportSpecifier(referenceSymbol);
+
+            //factor this out to a function
+            const parent = exportSpecifier.parent;
+            Debug.assert(parent.kind === SyntaxKind.NamedExports);
+            const grandParent = parent.parent;
+            Debug.assert(grandParent.kind == SyntaxKind.ExportDeclaration);
+            const isReExport = !!(grandParent as ExportDeclaration).moduleSpecifier
+            const aliased = isReExport ? referenceSymbol : state.checker.getShallowTargetOfExportSpecifier(referenceSymbol);
             f(aliased);
         }
 
@@ -764,7 +772,8 @@ namespace ts.FindAllReferences {
             if (search.includes(aliased)) {
                 addReference(referenceLocation, aliased, search, state);
                 const exportInfo = getExportInfo(referenceSymbol,
-                    (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named);
+                    (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named,
+                    state.checker);
                 Debug.assert(!!exportInfo);
                 getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol), state, exportInfo);
             }
