@@ -16,16 +16,16 @@ verify.noErrors();
 
 const ranges = test.rangesByText();
 const cs = ranges.get("C");
-const ds = ranges.get("D");
 const [c0, c1] = cs;
-const [d0, d1, d2] = ds;
+const [d0, d1, d2] = ranges.get("D");
 
-verify.rangesAreRenameLocations(false, false, cs);
-verify.rangesAreRenameLocations(false, false, ds);
+verify.rangesWithSameTextAreRenameLocations();
 
 const classes = { definition: "class C", ranges: [c0] };
 const bImports = { definition: "import D", ranges: [d0] };
 const cImports = { definition: "import D", ranges: [d1, d2] };
 verify.referenceGroups(cs, [classes, bImports, cImports]);
-verify.referenceGroups(d0, [bImports, cImports, classes]);
-verify.referenceGroups([d1, d2], [cImports, bImports, classes]);
+
+verify.referenceGroups(d0, [bImports, cImports]);
+verify.referenceGroups([d1, d2], [cImports, bImports]);
+

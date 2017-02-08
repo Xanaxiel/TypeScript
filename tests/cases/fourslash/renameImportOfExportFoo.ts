@@ -12,8 +12,6 @@
 ////    export function f(c: [|C|]): void;
 ////}
 
-//TODO: version of this test where `import { N }` -> `import { N as M }`
-
 verify.noErrors();
 
 verify.rangesAreRenameLocations();
@@ -26,4 +24,4 @@ const bs = { definition: "import C", ranges: [r1] };
 const imports = { definition: "import C", ranges: importRanges };
 verify.referenceGroups(r0, [classes, bs, imports]);
 verify.referenceGroups(r1, [bs, imports, classes]);
-verify.referenceGroups(importRanges, [imports, classes, bs]);
+verify.referenceGroups(importRanges, [imports, bs, classes]);

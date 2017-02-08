@@ -280,17 +280,20 @@ namespace ts.FindAllReferences {
 
     function getReferencesGlobally(search: Search, state: State, exportInfo?: ExportInfo) {
         if (!exportInfo) {
-            //search globally
+            // Global search
             for (const sourceFile of state.sourceFiles) {
                 state.cancellationToken.throwIfCancellationRequested();
                 searchForName(sourceFile, search);
             }
         } else {
-            //review
+            // It's an export, so just look in places where they are imports.
+            // But 'indirectUsers' indicates modules where a namespace import might be in use, so search there as if it's a global.
             const { importSearches, singleReferences, indirectUsers } = state.getImportSearches(search.symbol, exportInfo);
+
             // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
             state.addReferences(search, singleReferences);
 
+            // For each import, find all references to that import in its source file.
             for (const importSearch of importSearches) {
                 state.cancellationToken.throwIfCancellationRequested();
                 getReferencesInContainer(importSearch.location.getSourceFile(), importSearch, state);
@@ -314,57 +317,15 @@ namespace ts.FindAllReferences {
         //move
         function getNamedSearch(kind: ExportKind): Search | undefined {
             switch (kind) {
-                case ExportKind.Named: return search;
+                case ExportKind.Named:
+                    return search;
                 case ExportKind.Default:
-                    //We can't rename '.default', of course.
+                    // We can't rename a property access '.default'.
                     return state.isForRename ? undefined : { ...search, text: "default", escapedText: "default" };
                 case ExportKind.ExportEquals:
                     return undefined;
             }
         }
-
-        //kill
-        /*
-        for (const sourceFile of state.sourceFiles) {
-            state.cancellationToken.throwIfCancellationRequested();
-
-            if (exportInfo === undefined) {
-                searchForName(search);
-                continue;
-            }
-
-            const { importSearches, singleReferences } = getImportSearches(sourceFile, search.symbol, exportInfo, state);
-            // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
-            state.addReferences(search, singleReferences);
-
-            for (const importSearch of importSearches) {
-                getReferencesInContainer(sourceFile, importSearch, state);
-            }
-
-            // This may be accessed as a property of a namespace re-export.
-            //TODO: track all re-exports!
-            switch (exportInfo.kind) {
-                case ExportKind.Named:
-                    searchForName(search);
-                    break;
-                case ExportKind.Default:
-                    //We can't rename an access to '.default', of course!
-                    if (!state.isForRename) {
-                        searchForName({ ...search, text: "default", escapedText: "default" });
-                    }
-                    break;
-                case ExportKind.ExportEquals:
-                    // An `export =` export isn't a property of the module, it is the module. So no global search.
-                    break;
-            }
-
-            function searchForName(search: Search): void {
-                if (sourceFileHasName(sourceFile, search.escapedText)) {
-                    getReferencesInContainer(sourceFile, search, state);
-                }
-            }
-        }
-        */
     }
 
     /** getReferencedSymbols for special node kinds. */
