@@ -123,7 +123,7 @@ namespace ts.FindAllReferences {
         readonly inheritsFromCache: Map<boolean>;
         readonly searchMeaning: SemanticMeaning;
 
-        readonly importTracker: ImportTracker;
+        getImportSearches(exportSymbol: Symbol, exportInfo: ExportInfo): ImportsResult;
 
         createSearch(location: Node, symbol: Symbol, allSearchSymbols?: Symbol[]): Search;
 
@@ -135,7 +135,8 @@ namespace ts.FindAllReferences {
         // Because we are returning the implementation locations and not the identifier locations,
         // duplicate entries would be returned here as each of the type references is part of
         // the same implementation. For that reason, check before we add a new entry
-        markSeenContainingTypeReference(containingTypeReference: Node): void;
+        //returns true if we haven't seen this yet
+        markSeenContainingTypeReference(containingTypeReference: Node): boolean;
 
         addStringOrCommentReference(fileName: string, textSpan: TextSpan): void;
         getReferencePusher(referenceSymbol: Symbol, referenceLocation: Node): (node: Node) => void; //Make this private!
@@ -149,30 +150,27 @@ namespace ts.FindAllReferences {
         const sourceFileToSeenSymbols: Array<Array<true>> = [];
         const seenContainingTypeReferences: Array<true> = [];
         const isForConstructor = originalLocation.kind === SyntaxKind.ConstructorKeyword;
+        let importTracker: ImportTracker | undefined;
 
-        const importTracker = createImportTracker(sourceFiles, checker); //TODO: create this lazily (may not need)
-
-        return { sourceFiles, isForConstructor, checker, cancellationToken, searchMeaning, inheritsFromCache, ...options, importTracker,
+        const state: State = { sourceFiles, isForConstructor, checker, cancellationToken, searchMeaning, inheritsFromCache, ...options, getImportSearches,
             markSearched, markSeenContainingTypeReference, addStringOrCommentReference, getReferencePusher, addReference, addReferences, createSearch };
+        return state;
+
+        function getImportSearches(exportSymbol: Symbol, exportInfo: ExportInfo): ImportsResult {
+            if (!importTracker) importTracker = createImportTracker(sourceFiles, checker);
+            return importTracker(exportSymbol, exportInfo, state);
+        }
 
         function markSearched(sourceFile: SourceFile, symbol: Symbol): boolean {
             const sourceId = getNodeId(sourceFile);
             const symbolId = getSymbolId(symbol);
-            let seenSymbols = sourceFileToSeenSymbols[sourceId] || (sourceFileToSeenSymbols[sourceId] = []);
-            if (seenSymbols[symbolId]) {
-                return true;
-            }
-            seenSymbols[symbolId] = true;
-            return false;
+            const seenSymbols = sourceFileToSeenSymbols[sourceId] || (sourceFileToSeenSymbols[sourceId] = []);
+            return !seenSymbols[symbolId] && (seenSymbols[symbolId] = true);
         }
 
         function markSeenContainingTypeReference(containingTypeReference: Node): boolean {
             const id = getNodeId(containingTypeReference);
-            if (seenContainingTypeReferences[id]) {
-                return true;
-            }
-            seenContainingTypeReferences[id] = true;
-            return false;
+            return !seenContainingTypeReferences[id] && (seenContainingTypeReferences[id] = true);
         }
 
         function addStringOrCommentReference(fileName: string, textSpan: TextSpan) {
@@ -235,6 +233,8 @@ namespace ts.FindAllReferences {
         const state = createState(sourceFiles, node, checker, cancellationToken, searchMeaning, options, result);
         const search = state.createSearch(node, symbol, populateSearchSymbolSet(symbol, node, checker, options.implementations));
 
+        performance.mark("b4-getReferencedSymbolsForSymbol main body");
+
         // Try to get the smallest valid scope that we can limit our search to;
         // otherwise we'll need to search globally (i.e. include each file).
         const scope = getSymbolScope(symbol);
@@ -244,6 +244,9 @@ namespace ts.FindAllReferences {
         else {
             getReferencesGlobally(search, state);
         }
+
+        performance.mark("after-getReferencedSymbolsForSymbol main body");
+        performance.measure("getReferencedSymbolsForSymbol main body", "b4-getReferencedSymbolsForSymbol main body", "after-getReferencedSymbolsForSymbol main body");
 
         return result;
     }
@@ -282,7 +285,8 @@ namespace ts.FindAllReferences {
                 searchForName(sourceFile, search);
             }
         } else {
-            const { importSearches, singleReferences, indirectUsers } = getImportSearches2(search.symbol, exportInfo, state);
+            //review
+            const { importSearches, singleReferences, indirectUsers } = state.getImportSearches(search.symbol, exportInfo);
             // For `import { foo as bar }` just add the reference to `foo`, and don't otherwise search in the file.
             state.addReferences(search, singleReferences);
 
@@ -291,7 +295,7 @@ namespace ts.FindAllReferences {
                 getReferencesInContainer(importSearch.location.getSourceFile(), importSearch, state);
             }
 
-            const indirectSearch = getNamedSearch(exportInfo.kind);
+            const indirectSearch = getNamedSearch(exportInfo.exportKind);
             if (indirectSearch) {
                 for (const indirectUser of indirectUsers) {
                     state.cancellationToken.throwIfCancellationRequested();
@@ -648,7 +652,7 @@ namespace ts.FindAllReferences {
     //TOOD: 'checkMark' is ugly...
     function getReferencesInContainer(container: Node, search: Search, state: State): void {
         const sourceFile = container.getSourceFile();
-        if (state.markSearched(sourceFile, search.symbol)) { //Uh, but we've only searched in the container, not in the whole source file...
+        if (!state.markSearched(sourceFile, search.symbol)) { //Uh, but we've only searched in the container, not in the whole source file...
             return;
         }
 
@@ -743,6 +747,7 @@ namespace ts.FindAllReferences {
         }
     }
 
+    //Note: this recurses for uses of the export. It doesn't need to recurse to uses of the import because we skip past re-exports to the original import anyway.
     function getReferencesAtExportSpecifier(referenceLocation: Node, referenceSymbol: Symbol, exportSpecifier: ExportSpecifier, search: Search, state: State): void {
         if (exportSpecifier.propertyName) {
             // Given `export { foo as bar }`...
@@ -905,7 +910,7 @@ namespace ts.FindAllReferences {
 
         // If we got a type reference, try and see if the reference applies to any expressions that can implement an interface
         const containingTypeReference = getContainingTypeReference(refNode);
-        if (containingTypeReference && !state.markSeenContainingTypeReference(containingTypeReference)) {
+        if (containingTypeReference && state.markSeenContainingTypeReference(containingTypeReference)) {
             const parent = containingTypeReference.parent;
             if (isVariableLike(parent) && parent.type === containingTypeReference && parent.initializer && isImplementationExpression(parent.initializer)) {
                 addReference(parent.initializer);
