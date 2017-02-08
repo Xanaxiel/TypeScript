@@ -30,14 +30,24 @@ namespace ts.FindAllReferences {
             handleDirectImports(getDirectImports(exportingModuleSymbol));
 
             //Augmentations of the module can also use its exports without needing an import statement.
-            for (const decl of exportingModuleSymbol.declarations) {
-                if (ts.isExternalModuleAugmentation(decl)) {
-                    //Debug.assert(decl.kind === SyntaxKind.ModuleDeclaration); //kill, not needed
-                    addIndirectUser(decl as ModuleDeclarationLike);
+            let allIndirectUsers: SourceFile[];
+            if (exportingModuleSymbol.globalExports) {
+                // It's `export as namespace`, so anything could potentially use it.
+                allIndirectUsers = sourceFiles;
+            }
+            else {
+                for (const decl of exportingModuleSymbol.declarations) {
+                    if (ts.isExternalModuleAugmentation(decl)) {
+                        //Debug.assert(decl.kind === SyntaxKind.ModuleDeclaration); //kill, not needed
+                        addIndirectUser(decl as ModuleDeclarationLike);
+                    }
                 }
+
+                // This may return duplicates (if there are multiple module declarations in a single source file, all importing the same thing as a namespace) but `State.markSearched` will handle that.
+                allIndirectUsers = indirectUsers.map(x => x.getSourceFile());
             }
 
-            return { directImports, indirectUsers: indirectUsers.map(x => x.getSourceFile()) }; //this may return duplicate indirect users. But we'll count on `markSearched`.
+            return { directImports, indirectUsers: allIndirectUsers }; //this may return duplicate indirect users. But we'll count on `markSearched`.
 
             function handleDirectImports(theseDirectImports: ImporterOrCallExpression[]): void {
                 if (theseDirectImports) for (const direct of theseDirectImports) {

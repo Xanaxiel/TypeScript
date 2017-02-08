@@ -446,7 +446,7 @@ namespace ts.FindAllReferences {
         // symbol.parent indicates that it's a property or export.
         // If it's a property or UMD export, search globally.
         // If it's a module export, search locally (first), then we will recursively search globally after we see the export.
-        if (symbol.parent && (!(symbol.parent.flags & SymbolFlags.Module && isExternalModuleSymbol(symbol.parent))) || isUmdSymbol(symbol) ) {
+        if (symbolIsUnsafeExport(symbol)) {
             return undefined;
         }
 
@@ -479,6 +479,25 @@ namespace ts.FindAllReferences {
         //     declare module "b" { import { T } from "a"; export const x: T; }
         // So we must search the whole source file. (Because we will mark the source file as seen, we we won't return to it when searching for imports.)
         return symbol.parent ? scope.getSourceFile() : scope;
+    }
+
+    //neater. True for property or export in a namespace or export in a UMD module
+    function symbolIsUnsafeExport(symbol: Symbol): boolean {
+        const { parent } = symbol;
+        if (!parent) {
+            return false;
+        }
+
+        if (parent.flags & SymbolFlags.Module && isExternalModuleSymbol(parent)) {
+            if (parent.globalExports) {
+                // Module is exposed by `export as namespace`, so must be searched globally.
+                return true;
+            }
+            //Export in a module -- safe
+            return false;
+        }
+
+        return true;
     }
 
     function getPossibleSymbolReferencePositions(sourceFile: SourceFile, symbolName: string, start: number, end: number, cancellationToken: CancellationToken): number[] {
@@ -638,10 +657,6 @@ namespace ts.FindAllReferences {
             }
         }
         throw new Error("Should be unreachable");
-    }
-    //move
-    function isUmdSymbol(symbol: Symbol) {
-        return symbol.declarations.some(node => node.kind === SyntaxKind.NamespaceExportDeclaration);
     }
 
     function getReferencesAtLocation(sourceFile: SourceFile, position: number, search: Search, state: State): void {
