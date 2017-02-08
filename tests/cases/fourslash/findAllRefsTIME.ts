@@ -39,7 +39,7 @@ verify.referenceGroups(a, [
 ]);
 
 const start = process.hrtime();
-for (let i = 0; i < 1000; i++) {
+for (let i = 0; i < 10000; i++) {
     test.timeFindAllRefs(1);
     test.cleanupSemanticCache();
 }

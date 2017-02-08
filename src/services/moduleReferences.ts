@@ -156,7 +156,10 @@ namespace ts.FindAllReferences {
         const exportName = exportSymbol.name;
         const importSearches: Search[] = [];
         let singleReferences: Node[] = [];
-        function addSearch(location: Node, symbol: Symbol) { importSearches.push(createSearch(location, symbol)); }
+        function addSearch(location: Node, symbol: Symbol) {
+            //Since we're searching for imports, the comingFrom must be 'Export'. This means we won't recursively search for the exported ting for an import, since we've been there before.
+            importSearches.push(createSearch(location, symbol, ImportExport.Export));
+        }
 
         if (directImports) for (const decl of directImports) {
             handleImportLike(decl);
@@ -416,56 +419,61 @@ namespace ts.FindAllReferences {
         exportKind: ExportKind;
     }
 
+    export const enum ImportExport { Import, Export };
+
     //name
     interface IImported {
+        kind: ImportExport.Import;
         symbol: Symbol;
         isEqualsOrDefault: boolean;
     }
-    interface IExported {
+    export interface IExported {
+        kind: ImportExport.Export;
         symbol: Symbol;
         info: ExportInfo;
     }
     //todo: need export-import tests
-    export function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker): { imported?: IImported, exported?: IExported } {
-        let imported: IImported | undefined;
-        let exported: IExported | undefined;
+    export function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker, comingFromExport: boolean): IImported | IExported | undefined {
         const { parent } = node;
 
         function exportInfo(symbol: Symbol, kind: ExportKind): IExported {
             const info = getExportInfo(symbol, kind, checker);
-            return info && { symbol, info }
+            return info && { kind: ImportExport.Export, symbol, info }
         }
 
         if (symbol.flags & SymbolFlags.Export) {
             if (symbol.declarations.some(d => d === parent)) {
                 switch (getSpecialPropertyAssignmentKind(parent.parent)) {
                     case SpecialPropertyAssignmentKind.ExportsProperty:
-                        return { exported: exportInfo(symbol, ExportKind.Named) };
+                        return exportInfo(symbol, ExportKind.Named);
                     case SpecialPropertyAssignmentKind.ModuleExports:
                         //TODO:TEST
-                        return { exported: exportInfo(symbol, ExportKind.ExportEquals) };
+                        return exportInfo(symbol, ExportKind.ExportEquals);
                     case SpecialPropertyAssignmentKind.PrototypeProperty:
                     case SpecialPropertyAssignmentKind.ThisProperty:
-                        return {};
+                        return undefined;
                     case SpecialPropertyAssignmentKind.None:
                         //test
                         const { exportSymbol } = symbol;
                         Debug.assert(!!exportSymbol);
-                        exported = exportInfo(exportSymbol, getExportKindForNode(parent));
-                        break;
+                        return exportInfo(exportSymbol, getExportKindForNode(parent));
                 }
             }
         } else {
             const x = getExportNodeFromNodeNodeNode(parent);
             if (hasModifier(x, ModifierFlags.Export)) {
-                exported = exportInfo(symbol, getExportKindForNode(x));
+                return exportInfo(symbol, getExportKindForNode(x));
             }
             else if (parent.kind === SyntaxKind.ExportAssignment) {
                 // Get the symbol for the `export =` node; its parent is the module it's the export of.
                 const exportingModuleSymbol = parent.symbol.parent;
                 Debug.assert(!!exportingModuleSymbol);
-                return { exported: { symbol, info: { exportingModuleSymbol, exportKind: ExportKind.ExportEquals } } }
+                return { kind: ImportExport.Export, symbol, info: { exportingModuleSymbol, exportKind: ExportKind.ExportEquals } }
             }
+        }
+
+        if (comingFromExport) {
+            return undefined;
         }
 
         const isImport = nodeIsImport(node);
@@ -481,12 +489,12 @@ namespace ts.FindAllReferences {
                 }
 
                 if (symbolName(importedSymbol) === symbol.name) { //If this is a rename import, do not continue searching.
-                    imported = { symbol: importedSymbol, ...isImport };
+                    return { kind: ImportExport.Import, symbol: importedSymbol, ...isImport };
                 }
             }
         }
 
-        return { imported, exported };
+        return undefined;
     }
 
     //Looks like we don't need isEqualsOrDefault!

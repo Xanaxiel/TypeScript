@@ -101,6 +101,8 @@ namespace ts.FindAllReferences {
 
     // Node and symbols that are currently being searched for. Unlike `State`, this is different when searching for exports of a symbol vs searching locally.
     export interface Search {
+        readonly comingFrom?: ImportExport; //If coming from an export, we will not recursively search for the imported symbol.
+
         readonly location: Node;
         readonly symbol: Symbol;
         readonly text: string;
@@ -125,7 +127,7 @@ namespace ts.FindAllReferences {
 
         getImportSearches(exportSymbol: Symbol, exportInfo: ExportInfo): ImportsResult;
 
-        createSearch(location: Node, symbol: Symbol, allSearchSymbols?: Symbol[]): Search;
+        createSearch(location: Node, symbol: Symbol, comingFrom: ImportExport | undefined, allSearchSymbols?: Symbol[]): Search;
 
         // Returns 'true' if we've already searched for this symbol in this file.
         markSearched(sourceFile: SourceFile, symbol: Symbol): boolean;
@@ -210,12 +212,12 @@ namespace ts.FindAllReferences {
             }
         }
 
-        function createSearch(location: Node, symbol: Symbol, allSearchSymbols?: Symbol[]): Search {
+        function createSearch(location: Node, symbol: Symbol, comingFrom: ImportExport, allSearchSymbols?: Symbol[]): Search {
             // Note: if this is an external module symbol, the name doesn't include quotes.
             const text = stripQuotes(getDeclaredName(checker, symbol, location));
             const escapedText = escapeIdentifier(text);
             const parents = options.implementations && getParentSymbolsOfPropertyAccess(location, symbol, checker);
-            return { location, symbol, text, escapedText, parents, includes };
+            return { location, symbol, comingFrom, text, escapedText, parents, includes };
 
             function includes(referenceSymbol: Symbol): boolean {
                 return allSearchSymbols ? contains(allSearchSymbols, referenceSymbol) : referenceSymbol === symbol;
@@ -231,7 +233,7 @@ namespace ts.FindAllReferences {
 
         const result: ReferencedSymbol[] = [];
         const state = createState(sourceFiles, node, checker, cancellationToken, searchMeaning, options, result);
-        const search = state.createSearch(node, symbol, populateSearchSymbolSet(symbol, node, checker, options.implementations));
+        const search = state.createSearch(node, symbol, undefined, populateSearchSymbolSet(symbol, node, checker, options.implementations));
 
         performance.mark("b4-getReferencedSymbolsForSymbol main body");
 
@@ -733,17 +735,22 @@ namespace ts.FindAllReferences {
 
         // May recursively search in other modules if this is an import/export.
 
-        const { imported, exported } = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker);
+        const importOrExport = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker, search.comingFrom === ImportExport.Export);
+        if (!importOrExport) return;
 
-        if (imported && !(state.isForRename && imported.isEqualsOrDefault)) {
-            const importLocation = imported.symbol.declarations[0];
-            // Go to the symbol we imported from and find references for it.
-            getReferencesInContainer(importLocation.getSourceFile(), state.createSearch(importLocation, imported.symbol), state);
+        const { symbol } = importOrExport;
+
+        if (importOrExport.kind === ImportExport.Import) {
+            if (!(state.isForRename && importOrExport.isEqualsOrDefault)) {
+                const importLocation = symbol.declarations[0];
+                // Go to the symbol we imported from and find references for it.
+                getReferencesInContainer(importLocation.getSourceFile(), state.createSearch(importLocation, symbol, ImportExport.Import), state);
+            }
         }
-
-        if (exported !== undefined) {
+        else {
+            //Shouldn't need cast. https://github.com/Microsoft/TypeScript/issues/10564
             //Still look through exports for a rename, because those will be affected too!
-            getReferencesGlobally(state.createSearch(referenceLocation, exported.symbol), state, exported.info);
+            getReferencesGlobally(state.createSearch(referenceLocation, importOrExport.symbol, ImportExport.Export), state, importOrExport.info);
         }
     }
 
@@ -780,7 +787,7 @@ namespace ts.FindAllReferences {
                     (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named,
                     state.checker);
                 Debug.assert(!!exportInfo);
-                getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol), state, exportInfo);
+                getReferencesGlobally(state.createSearch(referenceLocation, referenceSymbol, ImportExport.Export), state, exportInfo);
             }
         }
     }
