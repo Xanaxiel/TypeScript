@@ -428,6 +428,7 @@ namespace ts.FindAllReferences {
         kind: ImportExport.Export;
         symbol: Symbol;
         info: ExportInfo;
+        shouldAddReference?: Identifier;
     }
 
     /**
@@ -438,9 +439,9 @@ namespace ts.FindAllReferences {
     export function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker, comingFromExport: boolean): ImportedSymbol | ExportedSymbol | undefined {
         const { parent } = node;
 
-        function exportInfo(symbol: Symbol, kind: ExportKind): ExportedSymbol {
+        function exportInfo(symbol: Symbol, kind: ExportKind, shouldAddReference?: Identifier): ExportedSymbol {
             const info = getExportInfo(symbol, kind, checker);
-            return info && { kind: ImportExport.Export, symbol, info }
+            return info && { kind: ImportExport.Export, symbol, info, shouldAddReference }
         }
 
         if (symbol.flags & SymbolFlags.Export) {
@@ -464,7 +465,20 @@ namespace ts.FindAllReferences {
         } else {
             const x = getExportNodeFromNodeNodeNode(parent);
             if (hasModifier(x, ModifierFlags.Export)) {
-                return exportInfo(symbol, getExportKindForNode(x));
+                let shouldAddReference: Identifier | undefined;
+                if (x.kind === SyntaxKind.ImportEqualsDeclaration && (x as ImportEqualsDeclaration).moduleReference === node) {
+                    //const lhs = (x as ImportEqualsDeclaration).name;
+                    //We're at `Y` in `export import X = Y`. This is not the exported symbol, the left-hand-side is.
+                    //symbol = checker.getSymbolAtLocation(lhs);
+                    //shouldAddReference = lhs;
+
+
+                    //Then this is really an import.
+                    const lhsSymbol = checker.getSymbolAtLocation((x as ImportEqualsDeclaration).name);
+                    return { kind: ImportExport.Import, symbol: lhsSymbol, isEqualsOrDefault: true };
+                }
+                else
+                    return exportInfo(symbol, getExportKindForNode(x), shouldAddReference);
             }
             else if (parent.kind === SyntaxKind.ExportAssignment) {
                 // Get the symbol for the `export =` node; its parent is the module it's the export of.

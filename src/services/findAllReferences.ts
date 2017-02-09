@@ -711,6 +711,10 @@ namespace ts.FindAllReferences {
             return;
         }
 
+        //if (referenceLocation.parent.kind === SyntaxKind.ImportEqualsDeclaration && hasModifier(referenceLocation, ModifierFlags.Export)) {
+        //    //TODO!!!
+        //}
+
         const relatedSymbol = getRelatedSymbol(search, referenceSymbol, referenceLocation, state);
         if (!relatedSymbol) {
             getReferenceForShorthandProperty(referenceSymbol, search, state);
@@ -737,6 +741,14 @@ namespace ts.FindAllReferences {
             }
         }
         else {
+            if (importOrExport.shouldAddReference) {//kill that field
+                //const lhs = importOrExport.shouldAddReference;
+                //Avoid adding it twice.
+                //if (!state.markSeenLHS(lhs)) {
+                //    addReference(importOrExport.shouldAddReference, symbol, importOrExport.shouldAddReference, state);
+                //}
+            }
+
             //Still look through exports for a rename, because those will be affected too!
             searchForImportsOfExport(referenceLocation, symbol, importOrExport.info, state);
         }
@@ -834,7 +846,7 @@ namespace ts.FindAllReferences {
         }
     }
 
-    function addReference(referenceLocation: Node, relatedSymbol: Symbol, searchLocation: Node, state: State): void {
+    export function addReference(referenceLocation: Node, relatedSymbol: Symbol, searchLocation: Node, state: State): void {
         const addRef = state.getReferencePusher(relatedSymbol, searchLocation);
         if (state.implementations) {
             addImplementationReferences(referenceLocation, addRef, state);

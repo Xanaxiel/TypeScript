@@ -16,8 +16,7 @@ goTo.marker();
 verify.quickInfoExists();
 verify.noErrors();
 
-const ranges = test.ranges();
-const [a0, a1, b0, c0, c1, c2] = ranges;
+const [a0, a1, b0, c0, c1, c2] = test.ranges();
 const aRanges = [a0, a1];
 const bRanges = [b0, c2];
 const cRanges = [c0, c1];
