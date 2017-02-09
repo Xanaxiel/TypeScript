@@ -3,24 +3,23 @@
 namespace ts.FindAllReferences {
     export interface ImportsResult {
         /** A local search for every import of the symbol. */
-        importSearches: Search[];
+        importSearches: Array<[Node, Symbol]>;
         /** Imports that may be added as references immediately, without further searching in the file. */
-        singleReferences: Node[];
+        singleReferences: Identifier[];
         /** List of source files that may (or may not) use the symbol via a namespace. */
         indirectUsers: SourceFile[];
     }
-    export type ImportTracker = (exportSymbol: Symbol, exportInfo: ExportInfo, state: State) => ImportsResult;
+    export type ImportTracker = (exportSymbol: Symbol, exportInfo: ExportInfo, isForRename: boolean) => ImportsResult;
 
     export function createImportTracker(sourceFiles: SourceFile[], checker: TypeChecker): ImportTracker {
         const allDirectImports = getAllDirectImports(sourceFiles, checker);
 
-        return (exportSymbol, exportInfo, state) => {
+        return (exportSymbol, exportInfo, isForRename) => {
             const { directImports, indirectUsers } = getImporters(exportInfo, checker);
-            return { indirectUsers, ...getSearchesFromDirectImports(exportSymbol, exportInfo, state, directImports) };
+            const { importSearches, singleReferences } = getSearchesFromDirectImports(directImports, exportSymbol, exportInfo.exportKind, checker, isForRename);
+            return { indirectUsers, importSearches, singleReferences };
         }
 
-        //Files that directly access the export.
-        //Files that may (or may not) access the export through a namespace.
         function getImporters({ exportingModuleSymbol, exportKind }: ExportInfo, checker: TypeChecker): { directImports: Importer[], indirectUsers: SourceFile[] } {
             const seenDirectImports: Array<true> = [];
             const seenIndirectUsers: Array<true> = [];
@@ -144,28 +143,25 @@ namespace ts.FindAllReferences {
      * The returned `importSearches` will result in the entire source file being searched.
      * But re-exports will be placed in 'singleReferences' since they cannot be locally referenced.
      */
-    function getSearchesFromDirectImports(exportSymbol: Symbol, { exportKind }: ExportInfo, { createSearch, checker, isForRename, markSeenLHS }: State, directImports: Importer[]): { importSearches: Search[], singleReferences: Node[] } {
+    function getSearchesFromDirectImports(directImports: Importer[], exportSymbol: Symbol, exportKind: ExportKind, checker: TypeChecker, isForRename: boolean): Pick<ImportsResult, "importSearches" | "singleReferences"> {
         const exportName = exportSymbol.name;
-        const importSearches: Search[] = [];
-        let singleReferences: Node[] = []; //KILL!
+        const importSearches: Array<[Node, Symbol]> = [];
+        let singleReferences: Identifier[] = []; //KILL!
         function addSearch(location: Node, symbol: Symbol) {
             //Since we're searching for imports, the comingFrom must be 'Export'. This means we won't recursively search for the exported ting for an import, since we've been there before.
-            importSearches.push(createSearch(location, symbol, ImportExport.Export));
+            importSearches.push([location, symbol]);
         }
 
         if (directImports) for (const decl of directImports) {
             handleImportLike(decl);
         }
 
-        //Don't want a duplicate reference! TODO:PERF
-        //singleReferences = singleReferences.filter(s => !importSearches.some(i => i.location.getSourceFile() === s.getSourceFile() && s.symbol === i.symbol));
-
         return { importSearches, singleReferences };
 
         function handleImportLike(decl: Importer): void {
             //move
             function handleNamespaceImportLike(importName: Identifier) {
-                if (isForRename && importName.text !== exportSymbol.name) {
+                if (isForRename && importName.text !== exportName) {
                     return;
                 }
 
@@ -214,7 +210,6 @@ namespace ts.FindAllReferences {
                 // Given `import f` and `export default function f`, we will rename both, but for `import g` we will rename just that.
                 if (name && (!isForRename || name.text === symbolName(exportSymbol))) {
                     const defaultImportAlias = checker.getSymbolAtLocation(name);
-                    Debug.assert(checker.getImmediateAliasedSymbol(defaultImportAlias) === exportSymbol); //kill
                     addSearch(name, defaultImportAlias);
                 }
 
@@ -233,12 +228,7 @@ namespace ts.FindAllReferences {
 
                 if (propertyName) {
                     //This is `import { foo as bar } from "./a"` or `export { foo as bar } from "./a"`. `foo` isn't a local in the file, so just add it as a single.
-                    if (markSeenLHS(propertyName)) {
-                        singleReferences.push(propertyName);
-                    }
-                    //OLD COMMENTS: //We will add a single reference to the property in `getReferencesAtExportSpecifier`.
-                    //addSearch(propertyName, exportSymbol); //This will probably be a single reference. But not if this is a `declare module` in a file with other references.
-
+                    singleReferences.push(propertyName);
                     if (!isForRename) { //For a rename, don't continue looking past rename imports. In `import { foo as bar }`, don't touch `bar`, just `foo`.
                         addSearch(name, checker.getSymbolAtLocation(name));
                     }
@@ -467,12 +457,7 @@ namespace ts.FindAllReferences {
             if (hasModifier(x, ModifierFlags.Export)) {
                 let shouldAddReference: Identifier | undefined;
                 if (x.kind === SyntaxKind.ImportEqualsDeclaration && (x as ImportEqualsDeclaration).moduleReference === node) {
-                    //const lhs = (x as ImportEqualsDeclaration).name;
                     //We're at `Y` in `export import X = Y`. This is not the exported symbol, the left-hand-side is.
-                    //symbol = checker.getSymbolAtLocation(lhs);
-                    //shouldAddReference = lhs;
-
-
                     //Then this is really an import.
                     const lhsSymbol = checker.getSymbolAtLocation((x as ImportEqualsDeclaration).name);
                     return { kind: ImportExport.Import, symbol: lhsSymbol, isEqualsOrDefault: true };
