@@ -16,56 +16,60 @@ namespace ts.FindAllReferences {
 
         return (exportSymbol, exportInfo, isForRename) => {
             const { directImports, indirectUsers } = getImporters(exportInfo, checker);
-            const { importSearches, singleReferences } = getSearchesFromDirectImports(directImports, exportSymbol, exportInfo.exportKind, checker, isForRename);
-            return { indirectUsers, importSearches, singleReferences };
+            return { indirectUsers, ...getSearchesFromDirectImports(directImports, exportSymbol, exportInfo.exportKind, checker, isForRename) };
         }
 
         function getImporters({ exportingModuleSymbol, exportKind }: ExportInfo, checker: TypeChecker): { directImports: Importer[], indirectUsers: SourceFile[] } {
-            const seenDirectImports: Array<true> = [];
-            const seenIndirectUsers: Array<true> = [];
-            const indirectUsers: ModuleDeclarationLike[] = [];
+            const markSeenDirectImport = nodeSeenTracker<ImporterOrCallExpression>();
+            const markSeenIndirectUser = nodeSeenTracker<ModuleDeclarationLike>();
             const directImports: Importer[] = [];
+            const isGlobal = !!exportingModuleSymbol.globalExports;
+            const indirectUserDeclarations: ModuleDeclarationLike[] = isGlobal ? undefined : []; //Only used if !isGlobal
 
-            handleDirectImports(getDirectImports(exportingModuleSymbol));
+            handleDirectImports(exportingModuleSymbol);
 
-            //Augmentations of the module can also use its exports without needing an import statement.
-            let allIndirectUsers: SourceFile[];
-            if (exportingModuleSymbol.globalExports) {
-                // It's `export as namespace`, so anything could potentially use it.
-                allIndirectUsers = sourceFiles;
-            }
-            else {
+            return { directImports, indirectUsers: getIndirectUsers() }; //this may return duplicate indirect users. But we'll count on `markSearched`.
+
+            function getIndirectUsers(): SourceFile[] {
+                if (isGlobal) {
+                    // It has `export as namespace`, so anything could potentially use it.
+                    return sourceFiles;
+                }
+
+                // Module augmentations may use this module's exports without importing it.
                 for (const decl of exportingModuleSymbol.declarations) {
                     if (ts.isExternalModuleAugmentation(decl)) {
-                        //Debug.assert(decl.kind === SyntaxKind.ModuleDeclaration); //kill, not needed
                         addIndirectUser(decl as ModuleDeclarationLike);
                     }
                 }
 
-                // This may return duplicates (if there are multiple module declarations in a single source file, all importing the same thing as a namespace) but `State.markSearched` will handle that.
-                allIndirectUsers = indirectUsers.map(x => x.getSourceFile());
+                // This may return duplicates (if there are multiple module declarations in a single source file, all importing the same thing as a namespace), but `State.markSearchedSymbol` will handle that.
+                return indirectUserDeclarations.map(getSourceFileOfNode);
             }
 
-            return { directImports, indirectUsers: allIndirectUsers }; //this may return duplicate indirect users. But we'll count on `markSearched`.
-
-            function handleDirectImports(theseDirectImports: ImporterOrCallExpression[]): void {
+            function handleDirectImports(exportingModuleSymbol: Symbol): void {
+                const theseDirectImports = getDirectImports(exportingModuleSymbol);
                 if (theseDirectImports) for (const direct of theseDirectImports) {
-                    if (!markSeenDirectImport(direct)) continue;
+                    if (!markSeenDirectImport(direct)) {
+                        continue;
+                    }
 
                     switch (direct.kind) {
                         case SyntaxKind.CallExpression:
-                            //Don't support re-exporting 'require()' calls
-                            addIndirectUser(direct.getSourceFile());
+                            if (!isGlobal) {
+                                // Don't support re-exporting 'require()' calls, so just add a single indirect user.
+                                addIndirectUser(direct.getSourceFile());
+                            }
                             break;
 
                         case SyntaxKind.ImportEqualsDeclaration:
-                            handleNamespaceImportLike(direct, direct.name, hasModifier(direct, ModifierFlags.Export));
+                            handleNamespaceImport(direct, direct.name, hasModifier(direct, ModifierFlags.Export));
                             break;
 
                         case SyntaxKind.ImportDeclaration:
                             const namedBindings = direct.importClause && direct.importClause.namedBindings;
                             if (namedBindings && namedBindings.kind === SyntaxKind.NamespaceImport) {
-                                handleNamespaceImportLike(direct, namedBindings.name)
+                                handleNamespaceImport(direct, namedBindings.name)
                             } else {
                                 directImports.push(direct);
                             }
@@ -75,7 +79,7 @@ namespace ts.FindAllReferences {
                             //If `direct.exportClause`, this is `export { foo } from "foo"` and it creates an alias, so recursive search will get it.
                             if (!direct.exportClause) {
                                 // This is `export * from "foo"`, so *this* module's direct imports need to be considered too!
-                                handleDirectImports(getDirectImports(getContainingModuleSymbol(direct, checker)));
+                                handleDirectImports(getContainingModuleSymbol(direct, checker));
                             }
                             else { directImports.push(direct); }
                             break;
@@ -83,48 +87,42 @@ namespace ts.FindAllReferences {
                 }
             }
 
-            function markSeenDirectImport(direct: ImporterOrCallExpression): boolean {
-                const id = getNodeId(direct);
-                return !seenDirectImports[id] && (seenDirectImports[id] = true);
-            }
-
-            //name
-            function handleNamespaceImportLike(direct: ImportEqualsDeclaration | ImportDeclaration, name: Identifier, isReExport?: boolean) {
+            function handleNamespaceImport(importDeclaration: ImportEqualsDeclaration | ImportDeclaration, name: Identifier, isReExport?: boolean): void {
                 if (exportKind === ExportKind.ExportEquals) {
-                    //Then this is actually a direct import.
-                    directImports.push(direct);
+                    // Then this is a direct import, not import-as-namespace.
+                    directImports.push(importDeclaration);
                 }
-                else {
-                    handleNamespaceImport(direct, name, isReExport);
+                else if (!isGlobal) {
+                    const sourceFileLike = getSourceFileLikeForImportDeclaration(importDeclaration);
+                    Debug.assert(sourceFileLike.kind === SyntaxKind.SourceFile || sourceFileLike.kind === SyntaxKind.ModuleDeclaration);
+                    if (isReExport || findNamespaceReExports(sourceFileLike, name, checker)) {
+                        addIndirectUsers(sourceFileLike);
+                    } else {
+                        addIndirectUser(sourceFileLike);
+                    }
                 }
             }
 
             function addIndirectUser(sourceFileLike: ModuleDeclarationLike): boolean {
-                const id = getNodeId(sourceFileLike);
-                const isNew = !seenIndirectUsers[id] && (seenIndirectUsers[id] = true);
+                Debug.assert(!isGlobal);
+                const isNew = markSeenIndirectUser(sourceFileLike);
                 if (isNew) {
-                    indirectUsers.push(sourceFileLike);
+                    indirectUserDeclarations.push(sourceFileLike);
                 }
                 return isNew;
             }
 
-            function handleNamespaceImport(importDeclaration: ImportDeclaration | ImportEqualsDeclaration, name: Identifier, isReExport?: boolean) {
-                const sourceFileLike = getSourceFileLikeForImportDeclaration(importDeclaration);
-                Debug.assert(sourceFileLike.kind === SyntaxKind.SourceFile || sourceFileLike.kind === SyntaxKind.ModuleDeclaration);
-                if (isReExport || findNamespaceReExports(sourceFileLike, name, checker)) {
-                    addIndirectUsers(sourceFileLike);
-                } else {
-                    addIndirectUser(sourceFileLike);
+            /** Adds a module and all of its transitive dependencies as possible indirect users. */
+            function addIndirectUsers(sourceFileLike: ModuleDeclarationLike): void {
+                if (!addIndirectUser(sourceFileLike)) {
+                    return;
                 }
-            }
 
-            function addIndirectUsers(sourceFileLike: ModuleDeclarationLike) {
-                if (!addIndirectUser(sourceFileLike)) return;
-                const moduleSymbol = sourceFileLike.symbol; //TODO: get merged symbol
+                const moduleSymbol = checker.getMergedSymbol(sourceFileLike.symbol);
                 Debug.assert(!!(moduleSymbol.flags & SymbolFlags.Module));
-                const direct = getDirectImports(moduleSymbol);
-                if (direct) for (const d of direct) { //name
-                    addIndirectUsers(getContainingModule(d));
+                const directImports = getDirectImports(moduleSymbol);
+                if (directImports) for (const directImport of directImports) {
+                    addIndirectUsers(getSourceFileLikeForImportDeclaration(directImport));
                 }
             }
         }
@@ -243,15 +241,6 @@ namespace ts.FindAllReferences {
                 }
             }
         }
-    }
-
-    //move
-    function getSourceFileLikeForImportDeclaration({ parent }: ImportDeclaration | ImportEqualsDeclaration): ModuleDeclarationLike {
-        if (parent.kind === SyntaxKind.SourceFile) {
-            return parent as SourceFile;
-        }
-        Debug.assert(parent.kind === SyntaxKind.ModuleBlock && parent.parent.kind === SyntaxKind.ModuleDeclaration);
-        return parent.parent as ModuleDeclaration;
     }
 
     //Returns 'true' if the namespace is re-exported from this module.
@@ -566,20 +555,22 @@ namespace ts.FindAllReferences {
         return symbol;
     }
 
-    function getContainingModuleSymbol(importer: Importer, checker: TypeChecker): Symbol {
-        return checker.getMergedSymbol(getContainingModule(importer).symbol);
+    function getContainingModuleSymbol(importer: Importer, checker: TypeChecker): Symbol { //name
+        return checker.getMergedSymbol(getSourceFileLikeForImportDeclaration(importer).symbol);
     }
 
-    function getContainingModule(node: Node): ModuleDeclarationLike {
-        return getAncestorWhere(node, ancestor => {
-            switch (ancestor.kind) {
-                case SyntaxKind.SourceFile:
-                    return true;
-                case SyntaxKind.ModuleDeclaration:
-                    return (ancestor as ModuleDeclaration).name.kind === SyntaxKind.StringLiteral;
-                default:
-                    return false;
-            }
-        }) as ModuleDeclarationLike;
+    //name
+    function getSourceFileLikeForImportDeclaration(node: ImporterOrCallExpression): ModuleDeclarationLike {
+        if (node.kind === SyntaxKind.CallExpression) {
+            return node.getSourceFile();
+        }
+
+        const { parent } = node;
+
+        if (parent.kind === SyntaxKind.SourceFile) {
+            return parent as SourceFile;
+        }
+        Debug.assert(parent.kind === SyntaxKind.ModuleBlock && parent.parent.kind === SyntaxKind.ModuleDeclaration && (parent.parent as ModuleDeclaration).name.kind === SyntaxKind.StringLiteral); //helper
+        return parent.parent as ModuleDeclaration;
     }
 }

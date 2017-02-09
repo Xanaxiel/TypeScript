@@ -1741,7 +1741,7 @@ namespace ts.FindAllReferences {
     }
 
     /** Returns `true` the first time it encounters a node and `false` afterwards. */
-    function nodeSeenTracker(): (node: Node) => boolean {
+    export function nodeSeenTracker<T extends Node>(): (node: T) => boolean {
         const seen: Array<true> = [];
         return node => {
             const id = getNodeId(node);
