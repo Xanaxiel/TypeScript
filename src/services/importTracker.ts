@@ -19,13 +19,28 @@ namespace ts.FindAllReferences {
         }
     }
 
+    /** Info about an exported symbol to perform recursive search on. */
+    export interface ExportInfo {
+        exportingModuleSymbol: Symbol;
+        exportKind: ExportKind;
+    }
+
+    export const enum ExportKind { Named, Default, ExportEquals } //move
+
+    export const enum ImportExport { Import, Export }
+
+    interface AmbientModuleDeclaration extends ModuleDeclaration { body?: ModuleBlock; }
+    type SourceFileLike = SourceFile | AmbientModuleDeclaration;
+    type Importer = AnyImportSyntax | ExportDeclaration;
+    type ImporterOrCallExpression = Importer | CallExpression;
+
     /** Returns import statements that directly reference the exporting module, and a list of files that may access the module through a namespace. */
     function getImportersForExport(sourceFiles: SourceFile[], allDirectImports: ImporterOrCallExpression[][], { exportingModuleSymbol, exportKind }: ExportInfo, checker: TypeChecker): { directImports: Importer[], indirectUsers: SourceFile[] } {
         const markSeenDirectImport = nodeSeenTracker<ImporterOrCallExpression>();
-        const markSeenIndirectUser = nodeSeenTracker<ModuleDeclarationLike>();
+        const markSeenIndirectUser = nodeSeenTracker<SourceFileLike>();
         const directImports: Importer[] = [];
         const isAvailableThroughGlobal = !!exportingModuleSymbol.globalExports;
-        const indirectUserDeclarations: ModuleDeclarationLike[] = isAvailableThroughGlobal ? undefined : [];
+        const indirectUserDeclarations: SourceFileLike[] = isAvailableThroughGlobal ? undefined : [];
 
         handleDirectImports(exportingModuleSymbol);
 
@@ -40,7 +55,7 @@ namespace ts.FindAllReferences {
             // Module augmentations may use this module's exports without importing it.
             for (const decl of exportingModuleSymbol.declarations) {
                 if (ts.isExternalModuleAugmentation(decl)) {
-                    addIndirectUser(decl as ModuleDeclarationLike);
+                    addIndirectUser(decl as SourceFileLike);
                 }
             }
 
@@ -106,7 +121,7 @@ namespace ts.FindAllReferences {
             }
         }
 
-        function addIndirectUser(sourceFileLike: ModuleDeclarationLike): boolean {
+        function addIndirectUser(sourceFileLike: SourceFileLike): boolean {
             Debug.assert(!isAvailableThroughGlobal);
             const isNew = markSeenIndirectUser(sourceFileLike);
             if (isNew) {
@@ -116,7 +131,7 @@ namespace ts.FindAllReferences {
         }
 
         /** Adds a module and all of its transitive dependencies as possible indirect users. */
-        function addIndirectUsers(sourceFileLike: ModuleDeclarationLike): void {
+        function addIndirectUsers(sourceFileLike: SourceFileLike): void {
             if (!addIndirectUser(sourceFileLike)) {
                 return;
             }
@@ -175,7 +190,8 @@ namespace ts.FindAllReferences {
             }
 
             const { moduleSpecifier } = decl;
-            Debug.assert(moduleSpecifier.kind === SyntaxKind.StringLiteral);
+            // Ignore if there's a grammar error
+            if (moduleSpecifier.kind !== SyntaxKind.StringLiteral) return;
 
             if (decl.kind === SyntaxKind.ExportDeclaration) {
                 searchForNamedImport(decl.exportClause);
@@ -242,7 +258,7 @@ namespace ts.FindAllReferences {
     }
 
     /** Returns 'true' is the namespace 'name' is re-exported from this module, and 'false' if it is only used locally. */
-    function findNamespaceReExports(sourceFileLike: ModuleDeclarationLike, name: Identifier, checker: TypeChecker): boolean {
+    function findNamespaceReExports(sourceFileLike: SourceFileLike, name: Identifier, checker: TypeChecker): boolean {
         const namespaceImportSymbol = checker.getSymbolAtLocation(name);
 
         return forEachPossibleImportOrExportStatement(sourceFileLike, statement => {
@@ -280,34 +296,17 @@ namespace ts.FindAllReferences {
         return map;
     }
 
-    function forEachPossibleImportOrExportStatement<T>(sourceFile: ModuleDeclarationLike, action: (statement: Statement) => T | undefined): T | undefined {
-        const statements = sourceFile.kind === SyntaxKind.SourceFile ? sourceFile.statements : (sourceFile.body as ModuleBlock).statements;
-        for (const statement of statements) {
-            const result = action(statement);
-            if (result !== undefined) return result;
-
-            if (isAmbientModuleDeclaration(statement)) {
-                const { body } = statement as ModuleDeclaration;
-                if (body) for (const statement of (body as ModuleBlock).statements) {
-                    const result = action(statement);
-                    if (result !== undefined) return result;
-                }
-            }
-        }
+    /** Iterates over all statements at the top level or in module declarations. Returns the first truthy result. */
+    function forEachPossibleImportOrExportStatement<T>(sourceFileLike: SourceFileLike, action: (statement: Statement) => T): T {
+        return forEach(sourceFileLike.kind === SyntaxKind.SourceFile ? sourceFileLike.statements : sourceFileLike.body.statements, statement =>
+            action(statement) || (isAmbientModuleDeclaration(statement) && forEach(statement.body && statement.body.statements, action)));
     }
 
-    //Also provides `require()` calls in JS
+    /** Calls `action` for each import, re-export, or require() in a file. */
     function forEachImport(sourceFile: SourceFile, action: (importStatement: ImporterOrCallExpression, imported: StringLiteral) => void): void {
         if (sourceFile.externalModuleIndicator) {
             for (const moduleSpecifier of sourceFile.imports) {
-                //Debug.assert(moduleSpecifier.kind === SyntaxKind.StringLiteral);
-                let importDecl = moduleSpecifier.parent;
-                if (importDecl.kind !== SyntaxKind.ImportDeclaration && importDecl.kind !== SyntaxKind.ExportDeclaration) {
-                    Debug.assert(importDecl.kind === SyntaxKind.ExternalModuleReference);
-                    importDecl = importDecl.parent;
-                    Debug.assert(importDecl.kind === SyntaxKind.ImportEqualsDeclaration);
-                }
-                action(importDecl as AnyImportSyntax | ExportDeclaration, moduleSpecifier as StringLiteral);
+                action(importerFromModuleSpecifier(moduleSpecifier), moduleSpecifier);
             }
         }
         else {
@@ -316,8 +315,7 @@ namespace ts.FindAllReferences {
                     case SyntaxKind.ExportDeclaration:
                     case SyntaxKind.ImportDeclaration: {
                         const decl = statement as ImportDeclaration | ExportDeclaration;
-                        if (decl.moduleSpecifier) {
-                            Debug.assert(decl.moduleSpecifier.kind === SyntaxKind.StringLiteral);
+                        if (decl.moduleSpecifier && decl.moduleSpecifier.kind === SyntaxKind.StringLiteral) {
                             action(decl, decl.moduleSpecifier as StringLiteral);
                         }
                         break;
@@ -336,10 +334,10 @@ namespace ts.FindAllReferences {
             });
 
             if (sourceFile.flags & NodeFlags.JavaScriptFile) {
-                //Find all 'require()' calls.
+                // Find all 'require()' calls.
                 recur(sourceFile);
                 function recur(node: Node) {
-                    if (isRequireCall(node, true)) {
+                    if (isRequireCall(node, /*checkArgumentIsStringLiteral*/true)) {
                         action(node, node.arguments[0] as StringLiteral);
                     }
                     forEachChild(node, recur);
@@ -348,166 +346,125 @@ namespace ts.FindAllReferences {
         }
     }
 
-    function forEachImportInNode(sourceFile: SourceFile | ModuleBlock, action: (importDeclaration: AnyImportSyntax | ExportDeclaration) => void): void {
-        for (const statement of sourceFile.statements) {
-            switch (statement.kind) {
-                case SyntaxKind.ImportDeclaration:
-                case SyntaxKind.ImportEqualsDeclaration:
-                    action(statement as ImportDeclaration | ImportEqualsDeclaration);
-                    break;
-
-                case SyntaxKind.ExportDeclaration: {
-                    const decl = statement as ExportDeclaration;
-                    if (decl.moduleSpecifier) {
-                        action(decl);
-                    }
-                    break;
-                }
-
-                case SyntaxKind.ModuleDeclaration: {
-                    const decl = statement as ModuleDeclaration;
-                    //No imports in namespaces, right???
-                    if (decl.name.kind === SyntaxKind.StringLiteral) {
-                        forEachImportInNode(decl.body as ModuleBlock, action);
-                    }
-                    break;
-                }
-            }
+    function importerFromModuleSpecifier(moduleSpecifier: StringLiteral): Importer {
+        const decl = moduleSpecifier.parent;
+        if (decl.kind === SyntaxKind.ImportDeclaration || decl.kind === SyntaxKind.ExportDeclaration) {
+            return decl as ImportDeclaration | ExportDeclaration;
         }
+        Debug.assert(decl.kind === SyntaxKind.ExternalModuleReference);
+        return (decl as ExternalModuleReference).parent;
     }
-
-    //!
-    function getExportNodeFromNodeNodeNode(parent: Node) {//name
-        if (parent.kind === SyntaxKind.VariableDeclaration) {
-            return getAncestor(parent, SyntaxKind.VariableStatement);
-        }
-        return parent;
-    }
-
-    type ModuleDeclarationLike = SourceFile | ModuleDeclaration;
-    type Importer = AnyImportSyntax | ExportDeclaration;
-    type ImporterOrCallExpression = Importer | CallExpression;
-
-    /** Info about an exported symbol to perform recursive search on. */
-    export interface ExportInfo {
-        exportingModuleSymbol: Symbol;
-        exportKind: ExportKind;
-    }
-
-    export const enum ImportExport { Import, Export }
 
     export interface ImportedSymbol {
         kind: ImportExport.Import;
         symbol: Symbol;
-        isEqualsOrDefault: boolean;
+        isNamedImport: boolean;
     }
     export interface ExportedSymbol {
         kind: ImportExport.Export;
         symbol: Symbol;
         info: ExportInfo;
-        shouldAddReference?: Identifier;
     }
-
     /**
      * Given a local reference, we might notice that it's an import/export and recursively search for references of that.
      * If at an import, look locally for the symbol it imports.
      * If an an export, look for all imports of it.
+     * @param comingFromExport If we are doing a search for all exports, don't bother looking backwards for the imported symbol, since that's the reason we're here.
      */
-    export function getImportExportSymbols(node: Node, symbol: Symbol, checker: TypeChecker, comingFromExport: boolean): ImportedSymbol | ExportedSymbol | undefined {
-        const { parent } = node;
+    export function getImportOrExportSymbol(node: Node, symbol: Symbol, checker: TypeChecker, comingFromExport: boolean): ImportedSymbol | ExportedSymbol | undefined {
+        const ex = getExport();
+        return ex || comingFromExport ? ex : getImport();
 
-        function exportInfo(symbol: Symbol, kind: ExportKind, shouldAddReference?: Identifier): ExportedSymbol {
-            const info = getExportInfo(symbol, kind, checker);
-            return info && { kind: ImportExport.Export, symbol, info, shouldAddReference }
-        }
-
-        if (symbol.flags & SymbolFlags.Export) {
-            if (symbol.declarations.some(d => d === parent)) {
-                switch (getSpecialPropertyAssignmentKind(parent.parent)) {
-                    case SpecialPropertyAssignmentKind.ExportsProperty:
-                        return exportInfo(symbol, ExportKind.Named);
-                    case SpecialPropertyAssignmentKind.ModuleExports:
-                        //TODO:TEST
-                        return exportInfo(symbol, ExportKind.ExportEquals);
-                    case SpecialPropertyAssignmentKind.PrototypeProperty:
-                    case SpecialPropertyAssignmentKind.ThisProperty:
+        function getExport(): ExportedSymbol | ImportedSymbol | undefined {
+            const { parent } = node;
+            if (symbol.flags & SymbolFlags.Export) {
+                if (parent.kind === SyntaxKind.PropertyAccessExpression) {
+                    // When accessing an export of a JS module, there's no alias. The symbol will still be flagged as an export even though we're at the use.
+                    // So check that we are at the declaration.
+                    if (!symbol.declarations.some(d => d === parent)) {
                         return undefined;
-                    case SpecialPropertyAssignmentKind.None:
-                        //test
-                        const { exportSymbol } = symbol;
-                        Debug.assert(!!exportSymbol);
-                        return exportInfo(exportSymbol, getExportKindForNode(parent));
+                    }
+
+                    switch (getSpecialPropertyAssignmentKind(parent.parent)) {
+                        case SpecialPropertyAssignmentKind.ExportsProperty:
+                            return exportInfo(symbol, ExportKind.Named);
+                        case SpecialPropertyAssignmentKind.ModuleExports:
+                            return exportInfo(symbol, ExportKind.ExportEquals);
+                        default:
+                            return undefined;
+                    }
                 }
-            }
-        } else {
-            const x = getExportNodeFromNodeNodeNode(parent);
-            if (hasModifier(x, ModifierFlags.Export)) {
-                let shouldAddReference: Identifier | undefined;
-                if (x.kind === SyntaxKind.ImportEqualsDeclaration && (x as ImportEqualsDeclaration).moduleReference === node) {
-                    //We're at `Y` in `export import X = Y`. This is not the exported symbol, the left-hand-side is.
-                    //Then this is really an import.
-                    const lhsSymbol = checker.getSymbolAtLocation((x as ImportEqualsDeclaration).name);
-                    return { kind: ImportExport.Import, symbol: lhsSymbol, isEqualsOrDefault: true };
+                else {
+                    const { exportSymbol } = symbol;
+                    Debug.assert(!!exportSymbol);
+                    return exportInfo(exportSymbol, getExportKindForDeclaration(parent));
                 }
-                else
-                    return exportInfo(symbol, getExportKindForNode(x), shouldAddReference);
-            }
-            else if (parent.kind === SyntaxKind.ExportAssignment) {
-                // Get the symbol for the `export =` node; its parent is the module it's the export of.
-                const exportingModuleSymbol = parent.symbol.parent;
-                Debug.assert(!!exportingModuleSymbol);
-                return { kind: ImportExport.Export, symbol, info: { exportingModuleSymbol, exportKind: ExportKind.ExportEquals } }
+            } else {
+                const exportNode = parent.kind === SyntaxKind.VariableDeclaration ? getAncestor(parent, SyntaxKind.VariableStatement) : parent;
+                if (hasModifier(exportNode, ModifierFlags.Export)) {
+                    if (exportNode.kind === SyntaxKind.ImportEqualsDeclaration && (exportNode as ImportEqualsDeclaration).moduleReference === node) {
+                        //We're at `Y` in `export import X = Y`. This is not the exported symbol, the left-hand-side is.
+                        //Then this is really an import.
+                        if (comingFromExport) return undefined;
+                        const lhsSymbol = checker.getSymbolAtLocation((exportNode as ImportEqualsDeclaration).name);
+                        return { kind: ImportExport.Import, symbol: lhsSymbol, isNamedImport: false };
+                    }
+                    else {
+                        return exportInfo(symbol, getExportKindForDeclaration(exportNode));
+                    }
+                }
+                else if (parent.kind === SyntaxKind.ExportAssignment) {
+                    // Get the symbol for the `export =` node; its parent is the module it's the export of.
+                    const exportingModuleSymbol = parent.symbol.parent;
+                    Debug.assert(!!exportingModuleSymbol);
+                    return { kind: ImportExport.Export, symbol, info: { exportingModuleSymbol, exportKind: ExportKind.ExportEquals } }
+                }
             }
         }
 
-        if (comingFromExport) {
-            return undefined;
-        }
+        function getImport(): ImportedSymbol | undefined {
+            const isImport = isNodeImport(node);
+            if (!isImport) return;
 
-        const isImport = nodeIsImport(node);
-        if (isImport) {
             // A symbol being imported is always an alias. So get what that aliases to find the local symbol.
             let importedSymbol = checker.getImmediateAliasedSymbol(symbol);
             if (importedSymbol) {
-                // Want to search on the local symbol in the exporting module, not the exported symbol.
+                // Search on the local symbol in the exporting module, not the exported symbol.
                 importedSymbol = skipExportSpecifierSymbol(importedSymbol, checker);
-                //Similarly, skip past the symbol for 'export ='
+                // Similarly, skip past the symbol for 'export ='
                 if (importedSymbol.name === "export=") {
                     importedSymbol = checker.getImmediateAliasedSymbol(importedSymbol);
                 }
 
-                if (symbolName(importedSymbol) === symbol.name) { //If this is a rename import, do not continue searching.
+                if (symbolName(importedSymbol) === symbol.name) { // If this is a rename import, do not continue searching.
                     return { kind: ImportExport.Import, symbol: importedSymbol, ...isImport };
                 }
             }
         }
 
-        return undefined;
+        function exportInfo(symbol: Symbol, kind: ExportKind): ExportedSymbol {
+            const info = getExportInfo(symbol, kind, checker);
+            return info && { kind: ImportExport.Export, symbol, info }
+        }
+
+        // Not meant for use with export specifiers or export assignment.
+        function getExportKindForDeclaration(node: Node): ExportKind | undefined {
+            return hasModifier(node, ModifierFlags.Default) ? ExportKind.Default : ExportKind.Named;
+        }
     }
 
-    function nodeIsImport(node: Node): { isEqualsOrDefault: boolean } | undefined {
+    function isNodeImport(node: Node): { isNamedImport: boolean } | undefined {
         const { parent } = node;
         switch (parent.kind) {
             case SyntaxKind.ImportEqualsDeclaration:
-                return (parent as ImportEqualsDeclaration).name === node ? { isEqualsOrDefault: true } : undefined;
-
-            case SyntaxKind.ImportSpecifier: {
-                //test!
-                //If we're importing `{foo as bar}`, don't continue finding if there's a rename.
-                //E.g. `import  {foo as bar }`
-                //If we're at `bar`, don't continue looking for the imported symbol.
-                //But if we're at `foo`, then do.
-                const { propertyName } = parent as ImportSpecifier;
-                return propertyName === undefined || propertyName === node ? { isEqualsOrDefault: false } : undefined;
-            }
-
+                return (parent as ImportEqualsDeclaration).name === node ? { isNamedImport: false } : undefined;
+            case SyntaxKind.ImportSpecifier:
+                // For a rename import `{ foo as bar }`, don't search for the imported symbol. Just find local uses of `bar`.
+                return (parent as ImportSpecifier).propertyName ? undefined : { isNamedImport: true };
             case SyntaxKind.ImportClause:
-                Debug.assert((parent as ImportClause).name === node);
-                return { isEqualsOrDefault: true };
-
             case SyntaxKind.NamespaceImport:
-                return { isEqualsOrDefault: true };
-
+                Debug.assert((parent as ImportClause | NamespaceImport).name === node);
+                return { isNamedImport: false };
             default:
                 return undefined;
         }
@@ -524,25 +481,10 @@ namespace ts.FindAllReferences {
             return symbol.name;
         }
 
-        const name = forEach(symbol.declarations, d => {
-            if (d.name && d.name.kind === SyntaxKind.Identifier) {
-                return d.name.text;
-            }
-        });
+        const name = forEach(symbol.declarations, ({ name }) => name && name.kind === SyntaxKind.Identifier && name.text);
         Debug.assert(!!name);
         return name;
     }
-
-    export const enum ExportKind { Named, Default, ExportEquals }
-    //Not meant for use with export specifiers or export assignment.
-    function getExportKindForNode(node: Node): ExportKind | undefined {
-        if (hasModifier(node, ModifierFlags.Default)) {
-             return ExportKind.Default;
-        }
-        return ExportKind.Named;
-    }
-
-    //utils below
 
     /** If at an export specifier, go to the symbol it refers to. */
     function skipExportSpecifierSymbol(symbol: Symbol, checker: TypeChecker): Symbol {
@@ -557,8 +499,7 @@ namespace ts.FindAllReferences {
         return checker.getMergedSymbol(getSourceFileLikeForImportDeclaration(importer).symbol);
     }
 
-    //name
-    function getSourceFileLikeForImportDeclaration(node: ImporterOrCallExpression): ModuleDeclarationLike {
+    function getSourceFileLikeForImportDeclaration(node: ImporterOrCallExpression): SourceFileLike {
         if (node.kind === SyntaxKind.CallExpression) {
             return node.getSourceFile();
         }
@@ -569,10 +510,10 @@ namespace ts.FindAllReferences {
             return parent as SourceFile;
         }
         Debug.assert(parent.kind === SyntaxKind.ModuleBlock && isAmbientModuleDeclaration(parent.parent));
-        return parent.parent as ModuleDeclaration;
+        return parent.parent as AmbientModuleDeclaration;
     }
 
-    function isAmbientModuleDeclaration(node: Node): boolean {//node is ModuleDeclaration & { body: ModuleBlock } {
+    function isAmbientModuleDeclaration(node: Node): node is AmbientModuleDeclaration {
         return node.kind === SyntaxKind.ModuleDeclaration && (node as ModuleDeclaration).name.kind === SyntaxKind.StringLiteral;
     }
 }

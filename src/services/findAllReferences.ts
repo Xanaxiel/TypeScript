@@ -629,12 +629,11 @@ namespace ts.FindAllReferences {
         }
     }
 
-    /** Search within node "container" for references for a search value, where the search value is defined as a
-         * tuple of(searchSymbol, searchText, searchLocation, and searchMeaning).
-        * searchLocation: a node where the search value
-        */
-    //This gets references within a scope.
-    //TOOD: 'checkMark' is ugly...
+    /**
+     * Search within node "container" for references for a search value, where the search value is defined as a
+     * tuple of(searchSymbol, searchText, searchLocation, and searchMeaning).
+     * searchLocation: a node where the search value
+     */
     function getReferencesInContainer(container: Node, search: Search, state: State): void {
         const sourceFile = container.getSourceFile();
         if (!state.markSearchedSymbol(sourceFile, search.symbol)) { //Uh, but we've only searched in the container, not in the whole source file...
@@ -682,10 +681,6 @@ namespace ts.FindAllReferences {
             return;
         }
 
-        //if (referenceLocation.parent.kind === SyntaxKind.ImportEqualsDeclaration && hasModifier(referenceLocation, ModifierFlags.Export)) {
-        //    //TODO!!!
-        //}
-
         const relatedSymbol = getRelatedSymbol(search, referenceSymbol, referenceLocation, state);
         if (!relatedSymbol) {
             getReferenceForShorthandProperty(referenceSymbol, search, state);
@@ -699,28 +694,18 @@ namespace ts.FindAllReferences {
             addReference(referenceLocation, relatedSymbol, search.location, state);
         }
 
-        //May recursively search in other modules if this is an import/export.
-
-        const importOrExport = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker, search.comingFrom === ImportExport.Export);
+        const importOrExport = getImportOrExportSymbol(referenceLocation, referenceSymbol, state.checker, search.comingFrom === ImportExport.Export);
         if (!importOrExport) return;
 
         const { symbol } = importOrExport;
 
         if (importOrExport.kind === ImportExport.Import) {
-            if (!(state.isForRename && importOrExport.isEqualsOrDefault)) {
+            if (!(state.isForRename && !importOrExport.isNamedImport)) { //neater
                 searchForImportedSymbol(symbol, state);
             }
         }
         else {
-            if (importOrExport.shouldAddReference) {//kill that field
-                //const lhs = importOrExport.shouldAddReference;
-                //Avoid adding it twice.
-                //if (!state.markSeenLHS(lhs)) {
-                //    addReference(importOrExport.shouldAddReference, symbol, importOrExport.shouldAddReference, state);
-                //}
-            }
-
-            //Still look through exports for a rename, because those will be affected too!
+            // We don't check for `state.isForRename`, even for default exports, because importers that previously matched the export name should be updated to continue matching.
             searchForImportsOfExport(referenceLocation, symbol, importOrExport.info, state);
         }
     }
@@ -1730,14 +1715,14 @@ namespace ts.FindAllReferences {
     export function isExternalModuleSymbol(moduleSymbol: Symbol) { //as opposed to a namespace
         Debug.assert(!!(moduleSymbol.flags & SymbolFlags.Module));
         for (const decl of moduleSymbol.declarations) {
-            if (decl.kind === SyntaxKind.SourceFile) {
-                return true;
-            }
-            if (decl.kind === SyntaxKind.ModuleDeclaration) {
-                return decl.name.kind === SyntaxKind.StringLiteral;
+            switch (decl.kind) {
+                case SyntaxKind.SourceFile:
+                    return true;
+                case SyntaxKind.ModuleDeclaration:
+                    return decl.name.kind === SyntaxKind.StringLiteral;
             }
         }
-        throw new Error("Should be unreachable");
+        throw new Error("Module symbol does not have a module declaration");
     }
 
     /** Returns `true` the first time it encounters a node and `false` afterwards. */

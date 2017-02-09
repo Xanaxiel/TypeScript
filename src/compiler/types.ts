@@ -1812,6 +1812,7 @@
     }
 
     export interface ExternalModuleReference extends Node {
+        parent: ImportEqualsDeclaration;
         kind: SyntaxKind.ExternalModuleReference;
         expression?: Expression;
     }
@@ -1823,6 +1824,7 @@
     export interface ImportDeclaration extends Statement {
         kind: SyntaxKind.ImportDeclaration;
         importClause?: ImportClause;
+        /** If this is not a StringLiteral it will be a grammar error. */
         moduleSpecifier: Expression;
     }
 
@@ -1854,6 +1856,7 @@
     export interface ExportDeclaration extends DeclarationStatement {
         kind: SyntaxKind.ExportDeclaration;
         exportClause?: NamedExports;
+        /** If this is not a StringLiteral it will be a grammar error. */
         moduleSpecifier?: Expression;
     }
 
@@ -2200,8 +2203,8 @@
         // Content of this field should never be used directly - use getResolvedModuleFileName/setResolvedModuleFileName functions instead
         /* @internal */ resolvedModules: Map<ResolvedModuleFull>;
         /* @internal */ resolvedTypeReferenceDirectiveNames: Map<ResolvedTypeReferenceDirective>;
-        /* @internal */ imports: LiteralExpression[];
-        /* @internal */ moduleAugmentations: LiteralExpression[]; //also use StringLiteral[]
+        /* @internal */ imports: StringLiteral[];
+        /* @internal */ moduleAugmentations: StringLiteral[];
         /* @internal */ patternAmbientModules?: PatternAmbientModule[];
         /* @internal */ ambientModuleNames: string[];
     }
