@@ -2201,7 +2201,7 @@
         /* @internal */ resolvedModules: Map<ResolvedModuleFull>;
         /* @internal */ resolvedTypeReferenceDirectiveNames: Map<ResolvedTypeReferenceDirective>;
         /* @internal */ imports: LiteralExpression[];
-        /* @internal */ moduleAugmentations: LiteralExpression[];
+        /* @internal */ moduleAugmentations: LiteralExpression[]; //also use StringLiteral[]
         /* @internal */ patternAmbientModules?: PatternAmbientModule[];
         /* @internal */ ambientModuleNames: string[];
     }

@@ -467,7 +467,7 @@ namespace ts {
         public nameTable: Map<number>;
         public resolvedModules: Map<ResolvedModuleFull>;
         public resolvedTypeReferenceDirectiveNames: Map<ResolvedTypeReferenceDirective>;
-        public imports: LiteralExpression[];
+        public imports: LiteralExpression[]; //StringLiteral[]
         public moduleAugmentations: LiteralExpression[];
         private namedDeclarations: Map<Declaration[]>;
         public ambientModuleNames: string[];

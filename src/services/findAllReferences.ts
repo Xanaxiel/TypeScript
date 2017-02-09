@@ -467,7 +467,7 @@ namespace ts.FindAllReferences {
                 return undefined;
             }
 
-            if (!container || container.kind === SyntaxKind.SourceFile && !isExternalModuleLike(<SourceFile>container)) {
+            if (!container || container.kind === SyntaxKind.SourceFile && !isExternalOrCommonJsModule(<SourceFile>container)) {
                 // This is a global variable and not an external module, any declaration defined
                 // within this scope is visible outside the file
                 return undefined;
