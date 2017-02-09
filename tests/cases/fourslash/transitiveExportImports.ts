@@ -19,18 +19,19 @@ verify.noErrors();
 const ranges = test.ranges();
 const [a0, a1, b0, c0, c1, c2] = ranges;
 const aRanges = [a0, a1];
-const bRanges = [b0];
+const bRanges = [b0, c2];
+const cRanges = [c0, c1];
 
-const bGroup = { definition: "import b = require('./a')", ranges: [b0, c2] }
+const bGroup = { definition: "import b = require('./a')", ranges: bRanges }
 
-verify.referenceGroups([a0], [ //a1
+verify.referenceGroups(aRanges, [
     { definition: "class A", ranges: aRanges },
     bGroup
 ]);
-//verify.referenceGroups(b0, [bGroup]);
-//verify.referenceGroups([c0, c1], [{ definition: "import b = require('./b')", ranges: [c0, c1] }]);
-//verify.referenceGroups(c2, [{ ...bGroup, definition: "(alias) new b.b(): b.b\nimport b.b = require('./a')"}]);
+verify.referenceGroups(b0, [bGroup]);
+verify.referenceGroups(c2, [{ ...bGroup, definition: "(alias) new b.b(): b.b\nimport b.b = require('./a')"}]);
+verify.singleReferenceGroup("import b = require('./b')", cRanges);
 
-//verify.rangesAreRenameLocations(false, false, [a0, a1]);
-//verify.rangesAreRenameLocations(false, false, [b0, c2]);
-//verify.rangesAreRenameLocations(false, false, [c0, c1]);
+verify.rangesAreRenameLocations(aRanges);
+verify.rangesAreRenameLocations(bRanges);
+verify.rangesAreRenameLocations(cRanges);

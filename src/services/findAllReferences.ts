@@ -124,6 +124,11 @@ namespace ts.FindAllReferences {
         readonly inheritsFromCache: Map<boolean>;
         readonly searchMeaning: SemanticMeaning;
 
+        //sigh
+        markSeenLHS(lhs: Identifier): boolean;
+        markSeenRHS(rhs: Identifier): boolean;
+
+
         getImportSearches(exportSymbol: Symbol, exportInfo: ExportInfo): ImportsResult;
 
         createSearch(location: Node, symbol: Symbol, comingFrom: ImportExport | undefined, allSearchSymbols?: Symbol[]): Search;
@@ -153,9 +158,23 @@ namespace ts.FindAllReferences {
         const isForConstructor = originalLocation.kind === SyntaxKind.ConstructorKeyword;
         let importTracker: ImportTracker | undefined;
 
-        const state: State = { sourceFiles, isForConstructor, checker, cancellationToken, searchMeaning, inheritsFromCache, ...options, getImportSearches,
+        const seenLHS: Array<true> = [];
+        const seenRHS: Array<true> = [];
+
+        const state: State = { markSeenLHS, markSeenRHS, sourceFiles, isForConstructor, checker, cancellationToken, searchMeaning, inheritsFromCache, ...options, getImportSearches,
             markSearched, markSeenContainingTypeReference, addStringOrCommentReference, getReferencePusher, addReference, addReferences, createSearch };
         return state;
+
+        //sigh
+        function markSeenLHS(lhs: Identifier): boolean {
+            const id = getNodeId(lhs);
+            return !seenLHS[id] && (seenLHS[id] = true);
+        }
+
+        function markSeenRHS(rhs: Identifier): boolean {
+            const id = getNodeId(rhs);
+            return !seenRHS[id] && (seenRHS[id] = true);
+        }
 
         function getImportSearches(exportSymbol: Symbol, exportInfo: ExportInfo): ImportsResult {
             if (!importTracker) importTracker = createImportTracker(sourceFiles, checker);
@@ -687,7 +706,8 @@ namespace ts.FindAllReferences {
         }
 
         if (isExportSpecifier(referenceLocation.parent)) {
-            getReferencesAtExportSpecifier(referenceLocation, referenceSymbol, referenceLocation.parent, search, state);
+            Debug.assert(referenceLocation.kind === SyntaxKind.Identifier);
+            getReferencesAtExportSpecifier(referenceLocation as Identifier, referenceSymbol, referenceLocation.parent, search, state);
             return;
         }
 
@@ -698,17 +718,13 @@ namespace ts.FindAllReferences {
         }
 
         if (state.isForConstructor) {
-            if (isNewExpressionTarget(referenceLocation)) {
-                addReference(referenceLocation, relatedSymbol, search, state);
-            }
-
-            findAdditionalConstructorReferences(relatedSymbol, referenceLocation, sourceFile, search, state);
+            findConstructorReferences(relatedSymbol, referenceLocation, sourceFile, search, state);
         }
         else {
-            addReference(referenceLocation, relatedSymbol, search, state);
+            addReference(referenceLocation, relatedSymbol, search.location, state);
         }
 
-        // May recursively search in other modules if this is an import/export.
+        //May recursively search in other modules if this is an import/export.
 
         const importOrExport = getImportExportSymbols(referenceLocation, referenceSymbol, state.checker, search.comingFrom === ImportExport.Export);
         if (!importOrExport) return;
@@ -722,7 +738,7 @@ namespace ts.FindAllReferences {
         }
         else {
             //Still look through exports for a rename, because those will be affected too!
-            searchForImportsOfExport(referenceLocation, importOrExport.symbol, importOrExport.info, state);
+            searchForImportsOfExport(referenceLocation, symbol, importOrExport.info, state);
         }
     }
 
@@ -744,22 +760,26 @@ namespace ts.FindAllReferences {
     }
 
     //Note: this recurses for uses of the export. It doesn't need to recurse to uses of the import because we skip past re-exports to the original import anyway.
-    function getReferencesAtExportSpecifier(referenceLocation: Node, referenceSymbol: Symbol, exportSpecifier: ExportSpecifier, search: Search, state: State): void {
+    function getReferencesAtExportSpecifier(referenceLocation: Identifier, referenceSymbol: Symbol, exportSpecifier: ExportSpecifier, search: Search, state: State): void {
         if (exportSpecifier.propertyName) {
             // Given `export { foo as bar }`...
             if (exportSpecifier.propertyName === referenceLocation) {
                 //We're at `foo`.
                 //skipPastExportImportSpecifier should have skipped past this normally. Shouldn't need to add a reference.
                 //Also, if this is a rename we won't want to look at rhs.
+                //ReferenceSymbol will actually be the export symbol even though we're on the left-hand side.
+                //const rhs = state.checker.getSymbolAtLocation(exportSpecifier.name);
+                const aliased = state.checker.getExportSpecifierLocalTargetSymbol(exportSpecifier);
+                f(aliased, referenceSymbol, exportSpecifier.name);
             } else {
                 Debug.assert(exportSpecifier.name === referenceLocation);
-                f(referenceSymbol);
+                f(referenceSymbol, referenceSymbol);
             }
         }
         else {
             Debug.assert(exportSpecifier.name === referenceLocation);
             // Use the local `foo` rather than the exported one for comparison and for adding the reference.
-            f(getShallowTargetOfExportSpecifierIfNecessary(exportSpecifier, referenceSymbol, state.checker));
+            f(getShallowTargetOfExportSpecifierIfNecessary(exportSpecifier, referenceSymbol, state.checker), referenceSymbol);
         }
 
         const exportDeclaration = exportSpecifier.parent.parent;
@@ -770,14 +790,30 @@ namespace ts.FindAllReferences {
             }
         }
 
-        function f(aliased: Symbol) { //name
-            if (search.includes(aliased)) {
-                addReference(referenceLocation, aliased, search, state);
-                const exportInfo = getExportInfo(referenceSymbol,
+        //rename 'aliased' to 'localSymbol'
+        function f(aliased: Symbol, exportSymbol: Symbol, renameExportRightHandSide?: Identifier) { //name
+            if (search.includes(aliased)) { //TODO: if not, return
+                if (!exportSpecifier.propertyName || (exportSpecifier.propertyName === referenceLocation ? state.markSeenLHS : state.markSeenRHS)(referenceLocation)) {
+                    addReference(referenceLocation, aliased, search.location, state);//dup
+                }
+
+                if (renameExportRightHandSide) {
+                    //For `export { foo as bar }`, rename `foo`, but not `bar`.
+                    if (state.isForRename) return;
+                    //Add a reference for the rhs too
+                    //ACTUALLy, we may have to search this file again. So use `singleReferences` to add this rather than adding immediately. `singleReferences` is filtered.
+                    //ACTUALLY ACTUALLY, we just do a full search for one lousy symbol.
+                    //ACTUALLY^3, just do it here and track duplicates.
+                    if (state.markSeenRHS(renameExportRightHandSide)) {
+                        addReference(renameExportRightHandSide, exportSymbol, renameExportRightHandSide, state);
+                    }
+                }
+
+                const exportInfo = getExportInfo(exportSymbol,
                     (referenceLocation as Identifier).originalKeywordKind === ts.SyntaxKind.DefaultKeyword ? ExportKind.Default : ExportKind.Named,
                     state.checker);
                 Debug.assert(!!exportInfo);
-                searchForImportsOfExport(referenceLocation, referenceSymbol, exportInfo, state);
+                searchForImportsOfExport(referenceLocation, exportSymbol, exportInfo, state);
             }
         }
     }
@@ -794,23 +830,27 @@ namespace ts.FindAllReferences {
          * position of property accessing, the referenceEntry of such position will be handled in the first case.
          */
         if (!(referenceSymbol.flags & SymbolFlags.Transient) && search.includes(shorthandValueSymbol)) {
-            addReference(referenceSymbolDeclaration.name, shorthandValueSymbol, search, state);
+            addReference(referenceSymbolDeclaration.name, shorthandValueSymbol, search.location, state);
         }
     }
 
-    function addReference(node: Node, relatedSymbol: Symbol, search: Search, state: State): void {
-        const addRef = state.getReferencePusher(relatedSymbol, search.location);
+    function addReference(referenceLocation: Node, relatedSymbol: Symbol, searchLocation: Node, state: State): void {
+        const addRef = state.getReferencePusher(relatedSymbol, searchLocation);
         if (state.implementations) {
-            addImplementationReferences(node, addRef, state);
+            addImplementationReferences(referenceLocation, addRef, state);
         }
         else {
-            addRef(node);
+            addRef(referenceLocation);
         }
     }
 
     /** Adds references when a constructor is used with `new this()` in its own class and `super()` calls in subclasses.  */
-    function findAdditionalConstructorReferences(referenceSymbol: Symbol, referenceLocation: Node, sourceFile: SourceFile, search: Search, state: State): void {
-        Debug.assert(referenceSymbol === search.symbol);
+    function findConstructorReferences(referenceSymbol: Symbol, referenceLocation: Node, sourceFile: SourceFile, search: Search, state: State): void {
+        Debug.assert(referenceSymbol === search.symbol); //So don't pass it in!
+
+        if (isNewExpressionTarget(referenceLocation)) {
+            addReference(referenceLocation, referenceSymbol, search.location, state);
+        }
 
         const classSymbol = skipAliases(search.symbol, state.checker);
         Debug.assert(isClassLike(classSymbol.valueDeclaration));

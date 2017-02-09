@@ -2566,7 +2566,19 @@ namespace FourSlash {
             this.rangesByText().forEach(ranges => this.verifyRangesAreRenameLocations(false, false, ranges));
         }
 
-        public verifyRangesAreRenameLocations(findInStrings: boolean, findInComments: boolean, ranges?: Range[]) {
+        public verifyRangesAreRenameLocations(ranges: Range[]): void;
+        public verifyRangesAreRenameLocations(findInStrings: boolean, findInComments: boolean, ranges?: Range[]): void;
+        public verifyRangesAreRenameLocations(arg0: any, arg1?: any, arg2?: any) {
+            let findInStrings: boolean, findInComments: boolean, ranges: Range[];
+            if (ts.isArray(arg0)) {
+                findInStrings = findInComments = false;
+                ranges = arg0;
+            }
+            else {
+                findInStrings = arg0;
+                findInComments = arg1;
+                ranges = arg2 || this.getRanges();
+            }
             this.goToEachRange(ranges, () => this.verifyRenameLocations(findInStrings, findInComments, ranges));
         }
 

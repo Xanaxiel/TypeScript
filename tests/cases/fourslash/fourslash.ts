@@ -203,6 +203,7 @@ declare namespace FourSlashInterface {
         singleReferenceGroup(definition: string, ranges?: Range[]): void;
         rangesAreOccurrences(isWriteAccess?: boolean): void;
         rangesWithSameTextAreRenameLocations(): void;
+        rangesAreRenameLocations(ranges: Range[]): void;
         rangesAreRenameLocations(findInStrings?: boolean, findInComments?: boolean, ranges?: Range[]): void;
         /**
          * Performs `referencesOf` for every range on the whole set.

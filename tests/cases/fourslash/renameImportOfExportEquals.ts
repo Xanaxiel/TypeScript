@@ -2,7 +2,7 @@
 // @noLib: true
 
 ////declare namespace [|{| "isWriteAccess": true, "isDefinition": true |}N|] {
-////    export var x: number;
+////    export var [|{| "isWriteAccess": true, "isDefinition": true |}x|]: number;
 ////}
 ////declare module "mod" {
 ////    export = [|N|];
@@ -13,16 +13,14 @@
 ////}
 ////declare module "b" {
 ////    import { [|{| "isWriteAccess": true, "isDefinition": true |}N|] } from "a";
-////    export const y: typeof [|N|].x;
+////    export const y: typeof [|N|].[|x|];
 ////}
 
-//TODO: version of this test where `import { N }` -> `import { N as M }`
-
-const ranges = test.ranges();
-const [N0, N1, a0, a1, b0, b1] = ranges;
+const [N0, x0, N1, a0, a1, b0, b1, x1] = test.ranges();
 const nRanges = [N0, N1];
 const aRanges = [a0, a1];
 const bRanges = [b0, b1];
+const xRanges = [x0, x1];
 
 const nGroup = { definition: "namespace N", ranges: nRanges };
 const aGroup = { definition: "import N", ranges: aRanges };
@@ -31,6 +29,8 @@ const bGroup = { definition: "import N", ranges: [b0, b1] };
 verify.referenceGroups(nRanges, [nGroup, aGroup, bGroup]);
 verify.referenceGroups([a0, a1], [aGroup, nGroup, bGroup]);
 verify.referenceGroups(bRanges, [bGroup, aGroup, nGroup]);
+verify.singleReferenceGroup("var N.x: number", xRanges);
 
-goTo.eachRange(nRanges, () => verify.renameLocations(false, false, ranges));
-verify.rangesAreRenameLocations(false, false, aRanges.concat(bRanges));
+goTo.eachRange(nRanges, () => verify.renameLocations(false, false, nRanges.concat(aRanges, bRanges)));
+verify.rangesAreRenameLocations(aRanges.concat(bRanges));
+verify.rangesAreRenameLocations(xRanges);

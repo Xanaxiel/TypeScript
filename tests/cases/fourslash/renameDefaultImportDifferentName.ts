@@ -23,5 +23,5 @@ verify.referenceGroups(C, [classes, imports]);
 verify.referenceGroups(B0, [imports]);
 verify.referenceGroups(B1, [{ definition: "(alias) new B(): B\nimport B", ranges: bRanges }]);
 
-verify.rangesAreRenameLocations(false, false, [C]);
-verify.rangesAreRenameLocations(false, false, bRanges);
+verify.rangesAreRenameLocations([C]);
+verify.rangesAreRenameLocations(bRanges);

@@ -78,7 +78,7 @@ namespace ts.FindAllReferences {
                                 // This is `export * from "foo"`, so *this* module's direct imports need to be considered too!
                                 handleDirectImports(getDirectImports(getContainingModuleSymbol(direct, checker)));
                             }
-                            directImports.push(direct);
+                            else { directImports.push(direct); }
                             break;
                     }
                 }
@@ -144,10 +144,10 @@ namespace ts.FindAllReferences {
      * The returned `importSearches` will result in the entire source file being searched.
      * But re-exports will be placed in 'singleReferences' since they cannot be locally referenced.
      */
-    function getSearchesFromDirectImports(exportSymbol: Symbol, { exportKind }: ExportInfo, { createSearch, checker, isForRename }: State, directImports: Importer[]): { importSearches: Search[], singleReferences: Node[] } {
+    function getSearchesFromDirectImports(exportSymbol: Symbol, { exportKind }: ExportInfo, { createSearch, checker, isForRename, markSeenLHS }: State, directImports: Importer[]): { importSearches: Search[], singleReferences: Node[] } {
         const exportName = exportSymbol.name;
         const importSearches: Search[] = [];
-        let singleReferences: Node[] = [];
+        let singleReferences: Node[] = []; //KILL!
         function addSearch(location: Node, symbol: Symbol) {
             //Since we're searching for imports, the comingFrom must be 'Export'. This means we won't recursively search for the exported ting for an import, since we've been there before.
             importSearches.push(createSearch(location, symbol, ImportExport.Export));
@@ -157,18 +157,27 @@ namespace ts.FindAllReferences {
             handleImportLike(decl);
         }
 
+        //Don't want a duplicate reference! TODO:PERF
+        //singleReferences = singleReferences.filter(s => !importSearches.some(i => i.location.getSourceFile() === s.getSourceFile() && s.symbol === i.symbol));
+
         return { importSearches, singleReferences };
 
         function handleImportLike(decl: Importer): void {
+            //move
+            function handleNamespaceImportLike(importName: Identifier) {
+                if (isForRename && importName.text !== exportSymbol.name) {
+                    return;
+                }
+
+                addSearch(importName, checker.getSymbolAtLocation(importName));
+            }
+
             if (decl.kind === SyntaxKind.ImportEqualsDeclaration) {
                 const { name, moduleReference } = decl;
                 if (exportKind === ExportKind.ExportEquals &&
                     moduleReference.kind === SyntaxKind.ExternalModuleReference &&
                     moduleReference.expression.kind === SyntaxKind.StringLiteral) {
-
-                    if (!isForRename || decl.name.text === exportSymbol.name) {
-                        addSearch(name, checker.getSymbolAtLocation(name));
-                    }
+                    handleNamespaceImportLike(name);
                 }
                 return;
             }
@@ -189,9 +198,7 @@ namespace ts.FindAllReferences {
                 //Text search will catch this (must use the name)
                 //An `export =` may be imported by a namespace import.
                 if (exportKind === ExportKind.ExportEquals) {
-                    //Don't need to check for match with exportSymbol since we've checked the module. (In fact, the imported symbol will be different.)
-                    const location = namedBindings.name;
-                    addSearch(location, checker.getSymbolAtLocation(location)); //duplicate code
+                    handleNamespaceImportLike(namedBindings.name);
                 }
 
                 return;
@@ -225,10 +232,14 @@ namespace ts.FindAllReferences {
                 if ((propertyName || name).text !== exportName) return;
 
                 if (propertyName) {
-                    if (isForRename) { //For a rename, don't continue looking past rename imports. In `import { foo as bar }`, don't touch `bar`, just `foo`.
+                    //This is `import { foo as bar } from "./a"` or `export { foo as bar } from "./a"`. `foo` isn't a local in the file, so just add it as a single.
+                    if (markSeenLHS(propertyName)) {
                         singleReferences.push(propertyName);
                     }
-                    else {
+                    //OLD COMMENTS: //We will add a single reference to the property in `getReferencesAtExportSpecifier`.
+                    //addSearch(propertyName, exportSymbol); //This will probably be a single reference. But not if this is a `declare module` in a file with other references.
+
+                    if (!isForRename) { //For a rename, don't continue looking past rename imports. In `import { foo as bar }`, don't touch `bar`, just `foo`.
                         addSearch(name, checker.getSymbolAtLocation(name));
                     }
                 }
@@ -544,7 +555,6 @@ namespace ts.FindAllReferences {
         }
         return ExportKind.Named;
     }
-
 
     //utils below
 
