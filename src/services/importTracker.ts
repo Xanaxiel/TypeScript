@@ -2,15 +2,16 @@
 /* @internal */
 namespace ts.FindAllReferences {
     export interface ImportsResult {
-        /** A local search for every import of the symbol. */
+        /** For every import of the symbol, the location and local symbol for the import. */
         importSearches: Array<[Identifier, Symbol]>;
-        /** Imports that may be added as references immediately, without further searching in the file. */
+        /** For rename imports/exports `{ foo as bar }`, `foo` is not a local, so it may be added as a reference immediately without further searching. */
         singleReferences: Identifier[];
-        /** List of source files that may (or may not) use the symbol via a namespace. */
+        /** List of source files that may (or may not) use the symbol via a namespace. (For UMD modules this is every file.) */
         indirectUsers: SourceFile[];
     }
     export type ImportTracker = (exportSymbol: Symbol, exportInfo: ExportInfo, isForRename: boolean) => ImportsResult;
 
+    /** Creates the imports map and returns an ImportTracker that uses it. Call this lazily to avoid calling `getDirectImportsMap` unnecessarily.  */
     export function createImportTracker(sourceFiles: SourceFile[], checker: TypeChecker): ImportTracker {
         const allDirectImports = getDirectImportsMap(sourceFiles, checker);
         return (exportSymbol, exportInfo, isForRename) => {
@@ -25,7 +26,7 @@ namespace ts.FindAllReferences {
         exportKind: ExportKind;
     }
 
-    export const enum ExportKind { Named, Default, ExportEquals } //move
+    export const enum ExportKind { Named, Default, ExportEquals }
 
     export const enum ImportExport { Import, Export }
 
@@ -86,7 +87,8 @@ namespace ts.FindAllReferences {
                         const namedBindings = direct.importClause && direct.importClause.namedBindings;
                         if (namedBindings && namedBindings.kind === SyntaxKind.NamespaceImport) {
                             handleNamespaceImport(direct, namedBindings.name)
-                        } else {
+                        }
+                        else {
                             directImports.push(direct);
                         }
                         break;
@@ -115,7 +117,8 @@ namespace ts.FindAllReferences {
                 Debug.assert(sourceFileLike.kind === SyntaxKind.SourceFile || sourceFileLike.kind === SyntaxKind.ModuleDeclaration);
                 if (isReExport || findNamespaceReExports(sourceFileLike, name, checker)) {
                     addIndirectUsers(sourceFileLike);
-                } else {
+                }
+                else {
                     addIndirectUser(sourceFileLike);
                 }
             }
@@ -157,9 +160,8 @@ namespace ts.FindAllReferences {
     function getSearchesFromDirectImports(directImports: Importer[], exportSymbol: Symbol, exportKind: ExportKind, checker: TypeChecker, isForRename: boolean): Pick<ImportsResult, "importSearches" | "singleReferences"> {
         const exportName = exportSymbol.name;
         const importSearches: Array<[Identifier, Symbol]> = [];
-        let singleReferences: Identifier[] = []; //KILL!
-        function addSearch(location: Identifier, symbol: Symbol) {
-            //Since we're searching for imports, the comingFrom must be 'Export'. This means we won't recursively search for the exported ting for an import, since we've been there before.
+        const singleReferences: Identifier[] = [];
+        function addSearch(location: Identifier, symbol: Symbol): void {
             importSearches.push([location, symbol]);
         }
 
@@ -170,28 +172,17 @@ namespace ts.FindAllReferences {
         return { importSearches, singleReferences };
 
         function handleImportLike(decl: Importer): void {
-            //move
-            function handleNamespaceImportLike(importName: Identifier) {
-                if (isForRename && importName.text !== exportName) {
-                    return;
-                }
-
-                addSearch(importName, checker.getSymbolAtLocation(importName));
-            }
-
             if (decl.kind === SyntaxKind.ImportEqualsDeclaration) {
-                const { name, moduleReference } = decl;
-                if (exportKind === ExportKind.ExportEquals &&
-                    moduleReference.kind === SyntaxKind.ExternalModuleReference &&
-                    moduleReference.expression.kind === SyntaxKind.StringLiteral) {
-                    handleNamespaceImportLike(name);
+                if (isProperImportEquals(decl)) {
+                    handleNamespaceImportLike(decl.name);
                 }
                 return;
             }
 
-            const { moduleSpecifier } = decl;
             // Ignore if there's a grammar error
-            if (moduleSpecifier.kind !== SyntaxKind.StringLiteral) return;
+            if (decl.moduleSpecifier.kind !== SyntaxKind.StringLiteral) {
+                return;
+            }
 
             if (decl.kind === SyntaxKind.ExportDeclaration) {
                 searchForNamedImport(decl.exportClause);
@@ -202,13 +193,7 @@ namespace ts.FindAllReferences {
 
             const { namedBindings } = importClause;
             if (namedBindings && namedBindings.kind === ts.SyntaxKind.NamespaceImport) {
-                //`import * as x from "./x"
-                //Text search will catch this (must use the name)
-                //An `export =` may be imported by a namespace import.
-                if (exportKind === ExportKind.ExportEquals) {
-                    handleNamespaceImportLike(namedBindings.name);
-                }
-
+                handleNamespaceImportLike(namedBindings.name);
                 return;
             }
 
@@ -233,24 +218,37 @@ namespace ts.FindAllReferences {
             }
         }
 
+        /**
+         * `import x = require("./x") or `import * as x from "./x"`.
+         * An `export =` may be imported by this syntax, so it may be a direct import.
+         * If it's not a direct import, it will be in `indirectUsers`, so we don't have to do anything here.
+         */
+        function handleNamespaceImportLike(importName: Identifier) {
+            // Don't rename an import that already has a different name than the export.
+            if (exportKind === ExportKind.ExportEquals && (!isForRename || importName.text === exportName)) {
+                addSearch(importName, checker.getSymbolAtLocation(importName));
+            }
+        }
+
         function searchForNamedImport(namedBindings: NamedImportsOrExports | undefined): void {
             if (namedBindings) for (const element of namedBindings.elements) {
                 const { name, propertyName } = element;
-                if ((propertyName || name).text !== exportName) return;
+                if ((propertyName || name).text !== exportName) {
+                    return;
+                }
 
                 if (propertyName) {
-                    //This is `import { foo as bar } from "./a"` or `export { foo as bar } from "./a"`. `foo` isn't a local in the file, so just add it as a single.
+                    // This is `import { foo as bar } from "./a"` or `export { foo as bar } from "./a"`. `foo` isn't a local in the file, so just add it as a single reference.
                     singleReferences.push(propertyName);
-                    if (!isForRename) { //For a rename, don't continue looking past rename imports. In `import { foo as bar }`, don't touch `bar`, just `foo`.
+                    if (!isForRename) { // If renaming `foo`, don't touch `bar`, just `foo`.
+                        // Search locally for `bar`.
                         addSearch(name, checker.getSymbolAtLocation(name));
                     }
                 }
                 else {
                     const localSymbol = element.kind === SyntaxKind.ExportSpecifier && element.propertyName
-                        ? checker.getExportSpecifierLocalTargetSymbol(element)
+                        ? checker.getExportSpecifierLocalTargetSymbol(element) // For re-exporting under a different name, we want to get the re-exported symbol.
                         : checker.getSymbolAtLocation(name);
-                        //was: `element.kind === SyntaxKind.ExportSpecifier ? checker.getExportSpecifierLocalTargetSymbol(element) : checker.getSymbolAtLocation(name);`
-                        //But if there's no propertyName, `getExportSpecifierLocalTargetSymbol` will return the symbol of the original declaration. Not the re-export.
                     addSearch(name, localSymbol);
                 }
             }
@@ -399,13 +397,16 @@ namespace ts.FindAllReferences {
                     Debug.assert(!!exportSymbol);
                     return exportInfo(exportSymbol, getExportKindForDeclaration(parent));
                 }
-            } else {
+            }
+            else {
                 const exportNode = parent.kind === SyntaxKind.VariableDeclaration ? getAncestor(parent, SyntaxKind.VariableStatement) : parent;
                 if (hasModifier(exportNode, ModifierFlags.Export)) {
                     if (exportNode.kind === SyntaxKind.ImportEqualsDeclaration && (exportNode as ImportEqualsDeclaration).moduleReference === node) {
-                        //We're at `Y` in `export import X = Y`. This is not the exported symbol, the left-hand-side is.
-                        //Then this is really an import.
-                        if (comingFromExport) return undefined;
+                        // We're at `Y` in `export import X = Y`. This is not the exported symbol, the left-hand-side is. So treat this as an import statement.
+                        if (comingFromExport) {
+                            return undefined;
+                        }
+
                         const lhsSymbol = checker.getSymbolAtLocation((exportNode as ImportEqualsDeclaration).name);
                         return { kind: ImportExport.Import, symbol: lhsSymbol, isNamedImport: false };
                     }
@@ -488,14 +489,14 @@ namespace ts.FindAllReferences {
 
     /** If at an export specifier, go to the symbol it refers to. */
     function skipExportSpecifierSymbol(symbol: Symbol, checker: TypeChecker): Symbol {
-        //isShorthandExportSpecifier could be a useful fn!
+        // For `export { foo } from './bar", there's nothing to skip, because it does  not create a new alias. But `export { foo } does.
         if (symbol.declarations.some(node => node.kind === SyntaxKind.ExportSpecifier && !(node as ExportSpecifier).propertyName && !(node as ExportSpecifier).parent.parent.moduleSpecifier)) {
             return checker.getShallowTargetOfExportSpecifier(symbol);
         }
         return symbol;
     }
 
-    function getContainingModuleSymbol(importer: Importer, checker: TypeChecker): Symbol { //name
+    function getContainingModuleSymbol(importer: Importer, checker: TypeChecker): Symbol {
         return checker.getMergedSymbol(getSourceFileLikeForImportDeclaration(importer).symbol);
     }
 
@@ -515,5 +516,9 @@ namespace ts.FindAllReferences {
 
     function isAmbientModuleDeclaration(node: Node): node is AmbientModuleDeclaration {
         return node.kind === SyntaxKind.ModuleDeclaration && (node as ModuleDeclaration).name.kind === SyntaxKind.StringLiteral;
+    }
+
+    function isProperImportEquals({ moduleReference }: ImportEqualsDeclaration): boolean {
+        return moduleReference.kind === SyntaxKind.ExternalModuleReference && moduleReference.expression.kind === SyntaxKind.StringLiteral
     }
 }
