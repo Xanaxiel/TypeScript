@@ -55,6 +55,6 @@ verify.referenceGroups(c1, [
     { definition: "import b", ranges: bRanges }
 ]);
 
-goTo.eachRange(aRanges, () => verify.renameLocations(false, false, aRanges.concat(cRanges)));
+verify.renameLocations(aRanges, aRanges.concat(cRanges));
 verify.rangesAreRenameLocations(bRanges);
 verify.rangesAreRenameLocations(cRanges);

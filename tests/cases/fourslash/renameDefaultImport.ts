@@ -26,6 +26,5 @@ verify.referenceGroups(B1, [
     classes
 ]);
 
-goTo.rangeStart(C);
-verify.renameLocations(false, false, ranges);
-verify.rangesAreRenameLocations(false, false, [B0, B1]);
+verify.renameLocations(C, ranges);
+verify.rangesAreRenameLocations([B0, B1]);

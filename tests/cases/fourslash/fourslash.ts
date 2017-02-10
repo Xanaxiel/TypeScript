@@ -203,8 +203,7 @@ declare namespace FourSlashInterface {
         singleReferenceGroup(definition: string, ranges?: Range[]): void;
         rangesAreOccurrences(isWriteAccess?: boolean): void;
         rangesWithSameTextAreRenameLocations(): void;
-        rangesAreRenameLocations(ranges: Range[]): void;
-        rangesAreRenameLocations(findInStrings?: boolean, findInComments?: boolean, ranges?: Range[]): void;
+        rangesAreRenameLocations(options?: Range[] | { findInStrings?: boolean, findInComments?: boolean, ranges?: Range[] });
         /**
          * Performs `referencesOf` for every range on the whole set.
          * If `ranges` is omitted, this is `test.ranges()`.
@@ -264,7 +263,7 @@ declare namespace FourSlashInterface {
         }[]): void;
         renameInfoSucceeded(displayName?: string, fullDisplayName?: string, kind?: string, kindModifiers?: string): void;
         renameInfoFailed(message?: string): void;
-        renameLocations(findInStrings: boolean, findInComments: boolean, ranges?: Range[]): void;
+        renameLocations(startRanges: Range | Range[], options: Range[] | { findInStrings?: boolean, findInComments?: boolean, ranges: Range[] }): void;
 
         /** Verify the quick info available at the current marker. */
         quickInfoIs(expectedText: string, expectedDocumentation?: string): void;

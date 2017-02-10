@@ -1176,9 +1176,26 @@ namespace FourSlash {
             assert.equal(TestState.getDisplayPartsJson(actualQuickInfo.documentation), TestState.getDisplayPartsJson(documentation), this.messageAtLastKnownMarker("QuickInfo documentation"));
         }
 
-        public verifyRenameLocations(findInStrings: boolean, findInComments: boolean, ranges?: Range[]) {
-            const renameInfo = this.languageService.getRenameInfo(this.activeFile.fileName, this.currentCaretPosition);
-            if (renameInfo.canRename) {
+        public verifyRenameLocations(startRanges: Range | Range[], options: Range[] | { findInStrings?: boolean, findInComments?: boolean, ranges: Range[] }) {
+            let findInStrings: boolean, findInComments: boolean, ranges: Range[];
+            if (ts.isArray(options)) {
+                findInStrings = findInComments = false;
+                ranges = options
+            } else {
+                findInStrings = !!options.findInStrings;
+                findInComments = !!options.findInComments;
+                ranges = options.ranges;
+            }
+
+            for (const startRange of toArray(startRanges)) {
+                this.goToRangeStart(startRange);
+
+                const renameInfo = this.languageService.getRenameInfo(this.activeFile.fileName, this.currentCaretPosition);
+                if (!renameInfo.canRename) {
+                    this.raiseError("Expected rename to succeed, but it actually failed.");
+                    break;
+                }
+
                 let references = this.languageService.findRenameLocations(
                     this.activeFile.fileName, this.currentCaretPosition, findInStrings, findInComments);
 
@@ -1203,9 +1220,6 @@ namespace FourSlash {
                         this.raiseError("Rename location results do not match.\n\nExpected: " + stringify(ranges) + "\n\nActual:" + stringify(references));
                     }
                 });
-            }
-            else {
-                this.raiseError("Expected rename to succeed, but it actually failed.");
             }
         }
 
@@ -2563,23 +2577,23 @@ namespace FourSlash {
         }
 
         public verifyRangesWithSameTextAreRenameLocations() {
-            this.rangesByText().forEach(ranges => this.verifyRangesAreRenameLocations(false, false, ranges));
+            this.rangesByText().forEach(ranges => this.verifyRangesAreRenameLocations(ranges));
         }
 
-        public verifyRangesAreRenameLocations(ranges: Range[]): void;
-        public verifyRangesAreRenameLocations(findInStrings: boolean, findInComments: boolean, ranges?: Range[]): void;
-        public verifyRangesAreRenameLocations(arg0: any, arg1?: any, arg2?: any) {
+        //neater (duplicates options parsing from verifyRenameLocations)
+        public verifyRangesAreRenameLocations(options?: Range[] | { findInStrings?: boolean, findInComments?: boolean, ranges?: Range[] }) {
             let findInStrings: boolean, findInComments: boolean, ranges: Range[];
-            if (ts.isArray(arg0)) {
+            if (ts.isArray(options)) {
                 findInStrings = findInComments = false;
-                ranges = arg0;
+                ranges = options;
             }
             else {
-                findInStrings = arg0;
-                findInComments = arg1;
-                ranges = arg2 || this.getRanges();
+                options = options || {};
+                findInStrings = !!options.findInStrings;
+                findInComments = !!options.findInComments;
+                ranges = options.ranges || this.getRanges();
             }
-            this.goToEachRange(ranges, () => this.verifyRenameLocations(findInStrings, findInComments, ranges));
+            this.verifyRenameLocations(ranges, { findInStrings, findInComments, ranges });
         }
 
         public verifyRangesWithSameTextAreDocumentHighlights() {
@@ -3698,8 +3712,8 @@ namespace FourSlashInterface {
             this.state.verifyRangesWithSameTextAreRenameLocations();
         }
 
-        public rangesAreRenameLocations(findInStrings = false, findInComments = false, ranges?: FourSlash.Range[]) {
-            this.state.verifyRangesAreRenameLocations(findInStrings, findInComments, ranges);
+        public rangesAreRenameLocations(options?: FourSlash.Range[] | { findInStrings?: boolean, findInComments?: boolean, ranges?: FourSlash.Range[] }) {
+            this.state.verifyRangesAreRenameLocations(options);
         }
 
         public rangesAreDocumentHighlights(ranges?: FourSlash.Range[]) {
@@ -3736,8 +3750,8 @@ namespace FourSlashInterface {
             this.state.verifyRenameInfoFailed(message);
         }
 
-        public renameLocations(findInStrings: boolean, findInComments: boolean, ranges?: FourSlash.Range[]) {
-            this.state.verifyRenameLocations(findInStrings, findInComments, ranges);
+        public renameLocations(startRanges: FourSlash.Range | FourSlash.Range[], options: FourSlash.Range[] | { findInStrings?: boolean, findInComments?: boolean, ranges: FourSlash.Range[] }) {
+            this.state.verifyRenameLocations(startRanges, options);
         }
 
         public verifyQuickInfoDisplayParts(kind: string, kindModifiers: string, textSpan: { start: number; length: number; },
